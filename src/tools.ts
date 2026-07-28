@@ -20,6 +20,14 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
   const server = new McpServer({
     name: "hydroxide-live",
     version: "0.1.0",
+    title: "Hydroxide Live for Roblox",
+    icons: [
+      {
+        src: "https://images.rbxcdn.com/905bd722ee0a6ceda3caacde54c0b081.png",
+        mimeType: "image/png",
+        sizes: ["180x180"],
+      },
+    ],
   })
 
   server.registerTool(
