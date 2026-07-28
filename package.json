@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
+    "evaluate:search": "bun run scripts/evaluate-live-search.ts",
     "check": "bun run typecheck && bun run lint && bun test"
   },
   "dependencies": {

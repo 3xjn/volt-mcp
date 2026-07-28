@@ -1,6 +1,16 @@
 import { z } from "zod"
 
-export const REQUEST_METHODS = ["status", "listScripts", "readScript", "eval"] as const
+export const REQUEST_METHODS = [
+  "status",
+  "listTargets",
+  "listScripts",
+  "searchScripts",
+  "readScript",
+  "inspectClosure",
+  "mutateClosure",
+  "restoreMutation",
+  "eval",
+] as const
 
 export const agentInfoSchema = z.object({
   agentVersion: z.string().min(1).max(32),

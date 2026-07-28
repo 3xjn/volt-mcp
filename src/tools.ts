@@ -1,26 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { z } from "zod"
 import type { LiveBridge } from "./bridge.js"
-
-const listScriptsInput = z.object({
-  query: z.string().max(200).optional().describe("Case-insensitive path/name filter"),
-  scope: z
-    .enum(["all", "running", "loaded", "cached"])
-    .default("all")
-    .describe("Which Volt script inventory to inspect"),
-  limit: z.number().int().min(1).max(1_000).default(200),
-})
-
-const readScriptInput = z.object({
-  path: z.string().min(1).max(4_096).describe("Canonical game/workspace instance path"),
-  startLine: z.number().int().min(1).default(1),
-  lineCount: z.number().int().min(1).max(5_000).default(1_000),
-})
-
-const evalInput = z.object({
-  code: z.string().min(1).max(100_000).describe("Luau chunk to execute in the Volt environment"),
-  chunkName: z.string().min(1).max(100).default("Hydroxide MCP"),
-})
+import {
+  evalInput,
+  inspectClosureInput,
+  listScriptsInput,
+  mutateClosureInput,
+  readScriptInput,
+  restoreMutationInput,
+  searchScriptsInput,
+} from "./tool-inputs.js"
 
 function textResult(value: unknown) {
   return {
@@ -46,6 +34,17 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
   )
 
   server.registerTool(
+    "roblox_list_targets",
+    {
+      title: "List Roblox Lua-state targets",
+      description: "List the default game Lua state plus active Actor and LuaStateProxy selectors.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async () => textResult(await bridge.request("listTargets", {})),
+  )
+
+  server.registerTool(
     "roblox_list_scripts",
     {
       title: "List live Roblox scripts",
@@ -60,7 +59,35 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
           query: input.query ?? "",
           scope: input.scope,
           limit: input.limit,
+          target: input.target,
         }),
+      ),
+  )
+
+  server.registerTool(
+    "roblox_search_scripts",
+    {
+      title: "Search indexed Roblox code",
+      description:
+        "Search the automatic live decompile cache using behavior words or text, returning ranked snippets, stable identities, constants, and API clues.",
+      inputSchema: searchScriptsInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async (input) =>
+      textResult(
+        await bridge.request(
+          "searchScripts",
+          {
+            query: input.query,
+            target: input.target,
+            scope: input.scope,
+            limit: input.limit,
+            contextLines: input.contextLines,
+            maxSnippets: input.maxSnippets,
+            refresh: input.refresh,
+          },
+          120_000,
+        ),
       ),
   )
 
@@ -81,9 +108,80 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
             path: input.path,
             startLine: input.startLine,
             lineCount: input.lineCount,
+            target: input.target,
           },
           120_000,
         ),
+      ),
+  )
+
+  server.registerTool(
+    "roblox_inspect_closure",
+    {
+      title: "Inspect a Roblox script closure",
+      description:
+        "Return stable script/function identity plus positional constants, upvalues, and nested prototypes for a selected script closure.",
+      inputSchema: inspectClosureInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async (input) =>
+      textResult(
+        await bridge.request("inspectClosure", {
+          path: input.path,
+          target: input.target,
+          prototypePath: input.prototypePath,
+          ...(input.closureId === undefined ? {} : { closureId: input.closureId }),
+        }),
+      ),
+  )
+
+  server.registerTool(
+    "roblox_mutate_closure",
+    {
+      title: "Mutate one Roblox closure value",
+      description:
+        "Compare and replace one primitive constant or root upvalue, retaining its original value for guarded restoration.",
+      inputSchema: mutateClosureInput,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+      },
+    },
+    async (input) =>
+      textResult(
+        await bridge.request("mutateClosure", {
+          path: input.path,
+          closureId: input.closureId,
+          target: input.target,
+          prototypePath: input.prototypePath,
+          kind: input.kind,
+          index: input.index,
+          expected: input.expected,
+          value: input.value,
+        }),
+      ),
+  )
+
+  server.registerTool(
+    "roblox_restore_mutation",
+    {
+      title: "Restore one Roblox closure mutation",
+      description:
+        "Restore the original value retained for a mutation ID, refusing if the live value changed again.",
+      inputSchema: restoreMutationInput,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
+    },
+    async (input) =>
+      textResult(
+        await bridge.request("restoreMutation", {
+          mutationId: input.mutationId,
+          target: input.target,
+        }),
       ),
   )
 
@@ -103,7 +201,11 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     },
     async (input) =>
       textResult(
-        await bridge.request("eval", { code: input.code, chunkName: input.chunkName }, 120_000),
+        await bridge.request(
+          "eval",
+          { code: input.code, chunkName: input.chunkName, target: input.target },
+          120_000,
+        ),
       ),
   )
 
