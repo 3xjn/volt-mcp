@@ -71,9 +71,53 @@ test("forwards an Actor target when searching indexed script text", async () => 
         contextLines: 2,
         maxSnippets: 3,
         refresh: false,
+        includeOtherPlayers: false,
       },
     },
   ])
+})
+
+test("forwards the opt-in for scripts under other players", async () => {
+  // Given
+  const client = await openClient()
+
+  // When
+  await client.callTool({
+    name: "roblox_list_scripts",
+    arguments: {
+      query: "PlayerScripts",
+      includeOtherPlayers: true,
+    },
+  })
+
+  // Then
+  expect(requests).toEqual([
+    {
+      method: "listScripts",
+      params: {
+        query: "PlayerScripts",
+        scope: "all",
+        limit: 200,
+        target: { kind: "game" },
+        includeOtherPlayers: true,
+      },
+    },
+  ])
+})
+
+test("keeps running and loaded scripts exempt from other-player filtering", () => {
+  // Given
+  const agentSource = readFileSync(new URL("../volt-agent.lua", import.meta.url), "utf8")
+
+  // When
+  const collectStart = agentSource.indexOf("local function collectScripts(")
+  const collectEnd = agentSource.indexOf("\nlocal scriptIndex", collectStart)
+  const collector = agentSource.slice(collectStart, collectEnd)
+
+  // Then
+  expect(collector).toContain("activeScripts[instance]")
+  expect(collector).toContain("includeOtherPlayers")
+  expect(collector).toContain("otherPlayer ~= nil and otherPlayer ~= Players.LocalPlayer")
 })
 
 test("forwards a Lua-state target when inspecting a discovered runtime closure", async () => {

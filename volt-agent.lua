@@ -208,42 +208,71 @@ local function serialize(value, depth, seen)
     return { type = "table", entries = entries, truncated = truncated }
 end
 
-local function collectScripts(scope)
+local function collectScripts(scope, includeOtherPlayers)
     local scripts = {}
     local seen = {}
+    local activeScripts = {}
+    local excludedOtherPlayerScripts = 0
 
-    local function append(getter)
+    local function readInventory(getter)
         local succeeded, values = pcall(getter)
         if not succeeded or type(values) ~= "table" then
-            return
+            return {}
         end
+        local inventory = {}
         for _, instance in ipairs(values) do
-            if typeof(instance) == "Instance"
-                and instance:IsA("LuaSourceContainer")
-                and not seen[instance]
-            then
-                seen[instance] = true
-                table.insert(scripts, instance)
+            if typeof(instance) == "Instance" and instance:IsA("LuaSourceContainer") then
+                table.insert(inventory, instance)
+            end
+        end
+        return inventory
+    end
+
+    local runningScripts = readInventory(getrunningscripts)
+    local loadedModules = readInventory(getloadedmodules)
+    for _, instance in ipairs(runningScripts) do
+        activeScripts[instance] = true
+    end
+    for _, instance in ipairs(loadedModules) do
+        activeScripts[instance] = true
+    end
+
+    local function append(values)
+        for _, instance in ipairs(values) do
+            if not seen[instance] then
+                local otherPlayer = instance:FindFirstAncestorOfClass("Player")
+                if
+                    activeScripts[instance]
+                    or includeOtherPlayers
+                    or not (otherPlayer ~= nil and otherPlayer ~= Players.LocalPlayer)
+                then
+                    seen[instance] = true
+                    table.insert(scripts, instance)
+                else
+                    excludedOtherPlayerScripts += 1
+                end
             end
         end
     end
 
-    if scope == "all" or scope == "cached" then
-        append(getscripts)
-    end
     if scope == "all" or scope == "running" then
-        append(getrunningscripts)
+        append(runningScripts)
     end
     if scope == "all" or scope == "loaded" then
-        append(getloadedmodules)
+        append(loadedModules)
     end
-    return scripts
+    if scope == "all" or scope == "cached" then
+        append(readInventory(getscripts))
+    end
+    return scripts, excludedOtherPlayerScripts
 end
 
 local scriptIndex = {}
 local indexDirty = true
 local indexGeneration = 0
 local lastIndexScan = 0
+local indexIncludesOtherPlayers = false
+local indexExcludedOtherPlayerScripts = 0
 local sourceQueue = {}
 local sourceQueueCursor = 1
 local queuedSources = setmetatable({}, { __mode = "k" })
@@ -557,39 +586,50 @@ local function queueSource(entry)
     if entry.sourceIndexed or entry.sourceError or queuedSources[entry.instance] then
         return
     end
-    queuedSources[entry.instance] = true
+    queuedSources[entry.instance] = entry
     table.insert(sourceQueue, entry)
     sourceIndexComplete = false
 end
 
-local function refreshScriptIndex(retryErrors)
+local function refreshScriptIndex(retryErrors, includeOtherPlayers)
     local present = {}
-    for _, scope in ipairs({ "running", "loaded", "cached" }) do
-        for _, instance in ipairs(collectScripts(scope)) do
-            if not present[instance] then
-                present[instance] = true
-                local entry = updateIndexEntry(instance)
-                if retryErrors then
-                    entry.sourceError = nil
-                end
-                queueSource(entry)
+    local scripts, excludedOtherPlayerScripts = collectScripts("all", includeOtherPlayers)
+    for _, instance in ipairs(scripts) do
+        if not present[instance] then
+            present[instance] = true
+            local entry = updateIndexEntry(instance)
+            if retryErrors then
+                entry.sourceError = nil
             end
+            queueSource(entry)
         end
     end
     for instance in next, scriptIndex do
         if not present[instance] then
-            dropCachedSource(scriptIndex[instance])
+            local entry = scriptIndex[instance]
+            dropCachedSource(entry)
+            if queuedSources[instance] == entry then
+                queuedSources[instance] = nil
+            end
             scriptIndex[instance] = nil
         end
     end
     indexGeneration += 1
     lastIndexScan = os.clock()
+    indexIncludesOtherPlayers = includeOtherPlayers == true
+    indexExcludedOtherPlayerScripts = excludedOtherPlayerScripts
     indexDirty = false
 end
 
-local function ensureScriptIndex(forceScan)
-    if forceScan or indexDirty or os.clock() - lastIndexScan >= INDEX_REFRESH_SECONDS then
-        refreshScriptIndex(forceScan)
+local function ensureScriptIndex(forceScan, includeOtherPlayers)
+    includeOtherPlayers = includeOtherPlayers == true
+    if
+        forceScan
+        or indexDirty
+        or includeOtherPlayers ~= indexIncludesOtherPlayers
+        or os.clock() - lastIndexScan >= INDEX_REFRESH_SECONDS
+    then
+        refreshScriptIndex(forceScan, includeOtherPlayers)
     end
 end
 
@@ -598,7 +638,9 @@ local function indexNextQueuedSource()
         local entry = sourceQueue[sourceQueueCursor]
         sourceQueueCursor += 1
         if entry and entry.instance then
-            queuedSources[entry.instance] = nil
+            if queuedSources[entry.instance] == entry then
+                queuedSources[entry.instance] = nil
+            end
             if scriptIndex[entry.instance] == entry and not entry.sourceIndexed and not entry.sourceError then
                 getIndexedSource(entry, true)
                 return true
@@ -643,6 +685,8 @@ local function indexStats()
         queuedSources = queuedSourceCount(),
         complete = sourceIndexComplete,
         decompileErrors = errors,
+        includeOtherPlayers = indexIncludesOtherPlayers,
+        excludedOtherPlayerScripts = indexExcludedOtherPlayerScripts,
         scannedAt = os.time(),
         dirty = indexDirty,
     }
@@ -1189,7 +1233,8 @@ function handlers.listTargets()
 end
 
 function handlers.listScripts(params)
-    ensureScriptIndex(false)
+    local includeOtherPlayers = params.includeOtherPlayers == true
+    ensureScriptIndex(false, includeOtherPlayers)
     local target = resolveTarget(params.target)
     local scope = params.scope or "all"
     if scope ~= "all" and scope ~= "running" and scope ~= "loaded" and scope ~= "cached" then
@@ -1199,7 +1244,8 @@ function handlers.listScripts(params)
     local query = string.lower(params.query or "")
     local limit = math.clamp(tonumber(params.limit) or 200, 1, 1000)
     local matches = {}
-    for _, instance in ipairs(collectScripts(scope)) do
+    local scripts, excludedOtherPlayerScripts = collectScripts(scope, includeOtherPlayers)
+    for _, instance in ipairs(scripts) do
         local entry = updateIndexEntry(instance)
         if
             (entry.stateId == target.stateId or (entry.stateId == nil and target.kind == "game"))
@@ -1226,12 +1272,15 @@ function handlers.listScripts(params)
         returned = #matches,
         scope = scope,
         query = query,
+        includeOtherPlayers = includeOtherPlayers,
+        excludedOtherPlayerScripts = excludedOtherPlayerScripts,
         target = describeTarget(target),
     }
 end
 
 function handlers.searchScripts(params)
-    ensureScriptIndex(params.refresh == true)
+    local includeOtherPlayers = params.includeOtherPlayers == true
+    ensureScriptIndex(params.refresh == true, includeOtherPlayers)
     local target = resolveTarget(params.target)
     local scope = params.scope or "all"
     if scope ~= "all" and scope ~= "running" and scope ~= "loaded" and scope ~= "cached" then
@@ -1254,7 +1303,8 @@ function handlers.searchScripts(params)
     local maxSnippets = math.clamp(tonumber(params.maxSnippets) or 3, 1, 10)
     local matches = {}
 
-    for _, instance in ipairs(collectScripts(scope)) do
+    local scripts, excludedOtherPlayerScripts = collectScripts(scope, includeOtherPlayers)
+    for _, instance in ipairs(scripts) do
         local entry = updateIndexEntry(instance)
         if entry.stateId == target.stateId or (entry.stateId == nil and target.kind == "game") then
             local source = getIndexedSource(entry, false)
@@ -1310,6 +1360,8 @@ function handlers.searchScripts(params)
         matches = matches,
         total = total,
         returned = #matches,
+        includeOtherPlayers = includeOtherPlayers,
+        excludedOtherPlayerScripts = excludedOtherPlayerScripts,
         index = indexStats(),
     }
 end

@@ -25,6 +25,10 @@ export const listScriptsInput = z.object({
   query: z.string().max(200).optional().describe("Case-insensitive path/name filter"),
   scope: scriptScopeInput,
   limit: z.number().int().min(1).max(1_000).default(200),
+  includeOtherPlayers: z
+    .boolean()
+    .default(false)
+    .describe("Include inactive scripts under Players other than the local player"),
   target: targetInput,
 })
 
@@ -35,6 +39,10 @@ export const searchScriptsInput = z.object({
   contextLines: z.number().int().min(0).max(10).default(2),
   maxSnippets: z.number().int().min(1).max(10).default(3),
   refresh: z.boolean().default(false).describe("Force a fresh inventory and decompile pass"),
+  includeOtherPlayers: z
+    .boolean()
+    .default(false)
+    .describe("Include inactive scripts under Players other than the local player"),
   target: targetInput,
 })
 

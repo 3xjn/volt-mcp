@@ -57,7 +57,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "List live Roblox scripts",
       description:
-        "List client-visible scripts from the live game so another tool can read one by path.",
+        "List client-visible scripts from the live game so another tool can read one by path. Inactive scripts under other players are excluded unless explicitly requested.",
       inputSchema: listScriptsInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -68,6 +68,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
           scope: input.scope,
           limit: input.limit,
           target: input.target,
+          includeOtherPlayers: input.includeOtherPlayers,
         }),
       ),
   )
@@ -77,7 +78,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "Search indexed Roblox code",
       description:
-        "Search the automatic live decompile cache using behavior words or text, returning ranked snippets, stable identities, constants, and API clues.",
+        "Search the automatic live decompile cache using behavior words or text, returning ranked snippets, stable identities, constants, and API clues. Inactive scripts under other players are excluded unless explicitly requested.",
       inputSchema: searchScriptsInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -93,6 +94,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
             contextLines: input.contextLines,
             maxSnippets: input.maxSnippets,
             refresh: input.refresh,
+            includeOtherPlayers: input.includeOtherPlayers,
           },
           120_000,
         ),

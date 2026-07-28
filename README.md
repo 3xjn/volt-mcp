@@ -96,8 +96,10 @@ the tools. A new Codex task is required after adding or changing an MCP server.
 
 - `roblox_status` shows the connected place and player.
 - `roblox_list_targets` lists the game state and active Actor/Lua-state selectors.
-- `roblox_list_scripts` discovers cached, running, or loaded client scripts.
-- `roblox_search_scripts` searches indexed paths and decompiled text with ranked line snippets.
+- `roblox_list_scripts` discovers cached, running, or loaded client scripts. By default it excludes
+  inactive scripts under players other than the local player.
+- `roblox_search_scripts` searches indexed paths and decompiled text with ranked line snippets,
+  using the same default exclusion.
 - `roblox_read_script` resolves a canonical instance path and returns paged decompiler output.
 - `roblox_inspect_closure` returns constants, upvalues, nested prototypes, and stable IDs for
   running closures associated with a script.
@@ -120,6 +122,13 @@ can keep becoming searchable without retaining every decompiled file in the Robl
 search with `refresh: true` rescans inventory and retries prior decompile errors, but never
 synchronously decompiles the whole corpus. Search results report queue progress and cache limits
 under `index`. No external indexer, user-maintained corpus, or manual indexing step is required.
+
+Scripts below another `Player` are excluded from listing, indexing, and search by default because
+their ordinary `PlayerScripts`, `PlayerGui`, and `Backpack` LocalScripts do not execute in the local
+client. Scripts that Volt reports through `getrunningscripts()` or `getloadedmodules()` always remain
+included. Pass `includeOtherPlayers: true` to list or search when investigating replicated
+containers; responses report both the applied setting and the number of excluded scripts. Direct
+read and inspection by canonical path remain unrestricted.
 
 Search ranking combines canonical script-path matches, exact decompiled-text matches, source string
 literals, stable API/member-call clues, and a small explicit map from behavior words such as
