@@ -17,7 +17,7 @@ export type HttpServerOptions = {
   readonly port: number
 }
 
-export interface LiveMcpHttpServer {
+export interface VoltMcpHttpServer {
   readonly port: number
   stop(): Promise<void>
 }
@@ -40,7 +40,7 @@ function jsonError(status: number, message: string): Response {
   return Response.json({ jsonrpc: "2.0", error: { code: -32_000, message }, id: null }, { status })
 }
 
-export function startHttpServer(options: HttpServerOptions): LiveMcpHttpServer {
+export function startHttpServer(options: HttpServerOptions): VoltMcpHttpServer {
   const sessions = new Map<string, McpSession>()
 
   async function createSession(request: Request): Promise<Response> {

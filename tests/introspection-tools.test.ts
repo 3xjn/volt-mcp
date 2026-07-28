@@ -29,7 +29,7 @@ const bridge: LiveBridge = {
 async function openClient(): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const server = createMcpServer(bridge)
-  const client = new Client({ name: "hydroxide-introspection-test", version: "0.1.0" })
+  const client = new Client({ name: "volt-mcp-introspection-test", version: "0.1.0" })
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
   openClients.push(client)
   return client

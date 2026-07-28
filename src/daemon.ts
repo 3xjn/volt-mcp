@@ -1,22 +1,22 @@
 import { type LiveBridge, startBridge } from "./bridge.js"
-import { type LiveMcpHttpServer, startHttpServer } from "./http.js"
+import { startHttpServer, type VoltMcpHttpServer } from "./http.js"
 
-export type LiveMcpDaemonOptions = {
+export type VoltMcpDaemonOptions = {
   readonly token: string
   readonly voltPort: number
   readonly mcpPort: number
 }
 
-export interface LiveMcpDaemon {
+export interface VoltMcpDaemon {
   readonly bridge: LiveBridge
   readonly voltPort: number
   readonly mcpPort: number
   stop(): Promise<void>
 }
 
-export async function startLiveMcpDaemon(options: LiveMcpDaemonOptions): Promise<LiveMcpDaemon> {
+export async function startVoltMcpDaemon(options: VoltMcpDaemonOptions): Promise<VoltMcpDaemon> {
   const bridge = startBridge({ token: options.token, port: options.voltPort })
-  let httpServer: LiveMcpHttpServer
+  let httpServer: VoltMcpHttpServer
   try {
     httpServer = startHttpServer({
       bridge,

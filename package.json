@@ -1,5 +1,5 @@
 {
-  "name": "@hydroxide/live-mcp",
+  "name": "@3xjn/volt-mcp",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,8 +8,10 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
-    "evaluate:search": "bun run scripts/evaluate-live-search.ts",
-    "check": "bun run typecheck && bun run lint && bun test"
+    "smoke": "bun run scripts/smoke.ts",
+    "evaluate:search": "bun run scripts/evaluate-search.ts",
+    "test:agent": "lune run tests/agent-syntax-contracts.luau",
+    "check": "bun run typecheck && bun run lint && bun test && bun run test:agent"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

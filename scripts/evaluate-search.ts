@@ -4,8 +4,8 @@ import { z } from "zod"
 
 const environment = z
   .object({
-    HYDROXIDE_MCP_ENDPOINT: z.url().default("http://127.0.0.1:32146/mcp"),
-    HYDROXIDE_MCP_TOKEN: z.string().min(32),
+    VOLT_MCP_ENDPOINT: z.url().default("http://127.0.0.1:32146/mcp"),
+    VOLT_MCP_TOKEN: z.string().min(32),
   })
   .parse(process.env)
 
@@ -74,18 +74,18 @@ async function search(
   )
 }
 
-const transport = new StreamableHTTPClientTransport(new URL(environment.HYDROXIDE_MCP_ENDPOINT), {
+const transport = new StreamableHTTPClientTransport(new URL(environment.VOLT_MCP_ENDPOINT), {
   requestInit: {
-    headers: { Authorization: `Bearer ${environment.HYDROXIDE_MCP_TOKEN}` },
+    headers: { Authorization: `Bearer ${environment.VOLT_MCP_TOKEN}` },
   },
 })
-const client = new Client({ name: "hydroxide-live-search-evaluation", version: "0.1.0" })
+const client = new Client({ name: "volt-mcp-search-evaluation", version: "0.1.0" })
 
 try {
   await client.connect(transport)
   const deadline = Date.now() + 180_000
   let index = (
-    await search(client, "__hydroxide_index_progress__", {
+    await search(client, "__volt_mcp_index_progress__", {
       limit: 1,
       refresh: true,
     })
@@ -93,7 +93,7 @@ try {
   while (!index.complete && Date.now() < deadline) {
     await Bun.sleep(1_000)
     index = (
-      await search(client, "__hydroxide_index_progress__", {
+      await search(client, "__volt_mcp_index_progress__", {
         limit: 1,
         refresh: false,
       })
@@ -101,7 +101,7 @@ try {
   }
   if (!index.complete) {
     throw new Error(
-      `Live search index did not complete within 180 seconds (${index.sources}/${index.scripts}, ${index.queuedSources} queued)`,
+      `Search index did not complete within 180 seconds (${index.sources}/${index.scripts}, ${index.queuedSources} queued)`,
     )
   }
 

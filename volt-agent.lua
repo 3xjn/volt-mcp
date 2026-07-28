@@ -2,15 +2,15 @@
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local environment = assert(getgenv, "Volt getgenv is required")()
-local configuration = assert(environment.HydroxideMcp, "Set getgenv().HydroxideMcp before auto-execute")
-local token = assert(configuration.Token, "HydroxideMcp.Token is required")
+local configuration = assert(environment.VoltMcp, "Set getgenv().VoltMcp before auto-execute")
+local token = assert(configuration.Token, "VoltMcp.Token is required")
 local endpoint = configuration.Url or "ws://127.0.0.1:32145/volt"
 
-assert(type(token) == "string" and #token >= 32, "HydroxideMcp.Token must be at least 32 characters")
-assert(type(endpoint) == "string", "HydroxideMcp.Url must be a string")
+assert(type(token) == "string" and #token >= 32, "VoltMcp.Token must be at least 32 characters")
+assert(type(endpoint) == "string", "VoltMcp.Url must be a string")
 
-if environment.HydroxideMcpAgent then
-    environment.HydroxideMcpAgent.Stop()
+if environment.VoltMcpAgent then
+    environment.VoltMcpAgent.Stop()
 end
 
 local function skipWhitespace(source, position)
@@ -1640,7 +1640,7 @@ function handlers.eval(params)
             ACTOR_EVAL_SOURCE,
             channelId,
             params.code,
-            params.chunkName or "Hydroxide MCP"
+            params.chunkName or "Volt MCP"
         )
         if not executed then
             response = { false, tostring(executeError), n = 2 }
@@ -1668,7 +1668,7 @@ function handlers.eval(params)
         }
     end
 
-    local chunk, compileError = loadstring(params.code, params.chunkName or "Hydroxide MCP")
+    local chunk, compileError = loadstring(params.code, params.chunkName or "Volt MCP")
     if not chunk then
         error(compileError)
     end
@@ -1758,7 +1758,14 @@ local function handleMessage(message, isBinary)
         return
     end
     local decoded, request = pcall(HttpService.JSONDecode, HttpService, message)
-    if not decoded or type(request) ~= "table" or request.type ~= "request" then
+    if not decoded or type(request) ~= "table" then
+        return
+    end
+    if request.type == "ready" then
+        print("Volt MCP authentication successful")
+        return
+    end
+    if request.type ~= "request" then
         return
     end
     if type(request.id) ~= "string" or type(request.method) ~= "string" then
@@ -1770,7 +1777,7 @@ local function handleMessage(message, isBinary)
         return
     end
     if inFlight >= 8 then
-        respond(request.id, false, "Too many live requests")
+        respond(request.id, false, "Too many concurrent requests")
         return
     end
 
@@ -1852,7 +1859,7 @@ function agent.Stop()
     end
 end
 
-environment.HydroxideMcpAgent = agent
+environment.VoltMcpAgent = agent
 startIndexMaintenance()
 task.spawn(connect)
 task.spawn(function()
@@ -1866,4 +1873,5 @@ task.spawn(function()
         end
     end
 end)
+print("Volt MCP successfully loaded")
 return agent

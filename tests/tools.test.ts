@@ -19,15 +19,15 @@ test("advertises Roblox branding during MCP initialization", async () => {
   // Given
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const server = createMcpServer(bridge)
-  const client = new Client({ name: "hydroxide-live-tools-test", version: "0.1.0" })
+  const client = new Client({ name: "volt-mcp-tools-test", version: "0.1.0" })
 
   // When
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
 
   // Then
   expect(client.getServerVersion()).toMatchObject({
-    name: "hydroxide-live",
-    title: "Hydroxide Live for Roblox",
+    name: "volt-mcp",
+    title: "Volt MCP for Roblox",
     icons: [
       {
         src: "https://images.rbxcdn.com/905bd722ee0a6ceda3caacde54c0b081.png",

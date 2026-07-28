@@ -85,6 +85,6 @@ export const restoreMutationInput = z.object({
 
 export const evalInput = z.object({
   code: z.string().min(1).max(100_000).describe("Luau chunk to execute in the Volt environment"),
-  chunkName: z.string().min(1).max(100).default("Hydroxide MCP"),
+  chunkName: z.string().min(1).max(100).default("Volt MCP"),
   target: targetInput,
 })

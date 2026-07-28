@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { z } from "zod"
-import { type LiveMcpDaemon, startLiveMcpDaemon } from "../src/daemon.js"
+import { startVoltMcpDaemon, type VoltMcpDaemon } from "../src/daemon.js"
 import { requestMessageSchema } from "../src/protocol.js"
 
 const TOKEN = "abcdef0123456789abcdef0123456789"
@@ -9,7 +9,7 @@ class IntegrationHarnessError extends Error {
   readonly name = "IntegrationHarnessError"
 }
 
-let daemon: LiveMcpDaemon | undefined
+let daemon: VoltMcpDaemon | undefined
 let socket: WebSocket | undefined
 
 type TestClient = {
@@ -180,14 +180,14 @@ afterEach(async () => {
 })
 
 test("shares one authenticated Volt bridge across two HTTP MCP clients", async () => {
-  daemon = await startLiveMcpDaemon({ token: TOKEN, voltPort: 0, mcpPort: 0 })
+  daemon = await startVoltMcpDaemon({ token: TOKEN, voltPort: 0, mcpPort: 0 })
   const endpoint = `http://127.0.0.1:${daemon.mcpPort}/mcp`
   const unauthorized = await fetch(endpoint, { method: "POST" })
   expect(unauthorized.status).toBe(401)
 
   const [first, second] = await Promise.all([
-    createClient("hydroxide-live-test-a", daemon.mcpPort),
-    createClient("hydroxide-live-test-b", daemon.mcpPort),
+    createClient("volt-mcp-test-a", daemon.mcpPort),
+    createClient("volt-mcp-test-b", daemon.mcpPort),
   ])
   await authenticateVolt(daemon.voltPort)
 
@@ -196,7 +196,7 @@ test("shares one authenticated Volt bridge across two HTTP MCP clients", async (
 })
 
 test("releases both listeners when the daemon stops", async () => {
-  daemon = await startLiveMcpDaemon({ token: TOKEN, voltPort: 0, mcpPort: 0 })
+  daemon = await startVoltMcpDaemon({ token: TOKEN, voltPort: 0, mcpPort: 0 })
   const voltPort = daemon.voltPort
   const mcpPort = daemon.mcpPort
   await daemon.stop()

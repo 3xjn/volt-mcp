@@ -1,22 +1,22 @@
 import { z } from "zod"
-import { startLiveMcpDaemon } from "./daemon.js"
+import { startVoltMcpDaemon } from "./daemon.js"
 
 const environmentSchema = z.object({
-  HYDROXIDE_MCP_TOKEN: z.string().min(32).max(256),
-  HYDROXIDE_MCP_PORT: z.coerce.number().int().min(1_024).max(65_535).default(32_145),
-  HYDROXIDE_MCP_HTTP_PORT: z.coerce.number().int().min(1_024).max(65_535).default(32_146),
+  VOLT_MCP_TOKEN: z.string().min(32).max(256),
+  VOLT_MCP_VOLT_PORT: z.coerce.number().int().min(1_024).max(65_535).default(32_145),
+  VOLT_MCP_HTTP_PORT: z.coerce.number().int().min(1_024).max(65_535).default(32_146),
 })
 
 async function main(): Promise<void> {
   const environment = environmentSchema.parse(process.env)
-  const daemon = await startLiveMcpDaemon({
-    token: environment.HYDROXIDE_MCP_TOKEN,
-    voltPort: environment.HYDROXIDE_MCP_PORT,
-    mcpPort: environment.HYDROXIDE_MCP_HTTP_PORT,
+  const daemon = await startVoltMcpDaemon({
+    token: environment.VOLT_MCP_TOKEN,
+    voltPort: environment.VOLT_MCP_VOLT_PORT,
+    mcpPort: environment.VOLT_MCP_HTTP_PORT,
   })
 
-  console.error(`Hydroxide Volt bridge listening on ws://127.0.0.1:${daemon.voltPort}/volt`)
-  console.error(`Hydroxide MCP listening on http://127.0.0.1:${daemon.mcpPort}/mcp`)
+  console.error(`Volt agent bridge listening on ws://127.0.0.1:${daemon.voltPort}/volt`)
+  console.error(`Volt MCP listening on http://127.0.0.1:${daemon.mcpPort}/mcp`)
 
   let stopping = false
   async function stop(): Promise<void> {

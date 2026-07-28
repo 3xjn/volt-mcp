@@ -1,13 +1,13 @@
-# Hydroxide Live MCP
+# Volt MCP
 
-This bridge lets Codex inspect the Roblox client currently attached to Volt. It uses:
+Agent-facing Roblox code search and runtime inspection for Volt.
+
+Volt MCP lets Codex inspect the Roblox client currently attached to Volt. It uses:
 
 - one persistent, user-local Streamable HTTP MCP server;
 - a WebSocket server bound only to `127.0.0.1`;
 - an authenticated Volt auto-execute agent;
 - Volt's documented script inventory and decompiler functions.
-
-It does not load the Hydroxide UI and does not use RakNet.
 
 ## 1. Choose a shared token
 
@@ -23,38 +23,36 @@ Keep it local. Do not commit it.
 
 Save this as a Volt auto-execute script, replacing `YOUR_TOKEN`:
 
-```lua
-getgenv().HydroxideMcp = {
+```luau
+getgenv().VoltMcp = {
     Token = "YOUR_TOKEN",
 }
 
-loadstring(
-    game:HttpGetAsync(
-        "https://raw.githubusercontent.com/3xjn/hydroxide/dev/tools/live-mcp/volt-agent.lua"
-    ),
-    "Hydroxide Live MCP"
-)()
+local source = readfile("volt-mcp/local/volt-agent.lua")
+local chunk, compileError = loadstring(source, "Volt MCP")
+assert(chunk, compileError)()
 ```
 
 For a non-default port, add `Url = "ws://127.0.0.1:PORT/volt"` to the table.
 
 The agent survives character respawns because it is attached to the client, not the character. It
 retries when the local MCP server is not running and replaces an older copy when auto-execute runs
-again.
+again. Volt's console reports `Volt MCP successfully loaded` after initialization and
+`Volt MCP authentication successful` whenever the local bridge accepts the connection.
 
 ## 3. Start the persistent bridge
 
 Install the bridge dependencies once:
 
 ```powershell
-cd C:\git\hydroxide\tools\live-mcp
+cd C:\git\volt-mcp
 bun install
 ```
 
 Store the same token in the Windows user environment:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("HYDROXIDE_MCP_TOKEN", "YOUR_TOKEN", "User")
+[Environment]::SetEnvironmentVariable("VOLT_MCP_TOKEN", "YOUR_TOKEN", "User")
 ```
 
 Create a user logon task that runs `bun run src/index.ts` directly from this directory. One daemon
@@ -68,12 +66,12 @@ fixed port.
 
 ## 4. Configure Codex
 
-Add this project-scoped configuration to `C:\git\hydroxide\.codex\config.toml`:
+Add this user-level configuration to `C:\Users\<you>\.codex\config.toml`:
 
 ```toml
-[mcp_servers.hydroxide_live]
+[mcp_servers.volt_mcp]
 url = "http://127.0.0.1:32146/mcp"
-bearer_token_env_var = "HYDROXIDE_MCP_TOKEN"
+bearer_token_env_var = "VOLT_MCP_TOKEN"
 required = true
 startup_timeout_sec = 10
 tool_timeout_sec = 120
@@ -157,8 +155,11 @@ marked destructive.
 bun run check
 ```
 
-With a live client connected, `bun run evaluate:search` runs a reusable retrieval check against
+`bun run smoke` connects as a fresh MCP client, lists the advertised tools, and checks the attached
+Volt client status.
+
+With a connected client, `bun run evaluate:search` runs a reusable retrieval check against
 four behavior-labeled modules from Roblox's source-available PlayerModule: camera input, keyboard
 movement, camera obstruction, and vehicle-camera smoothing. It reports each expected module's rank
-within the live decompiled corpus. `HYDROXIDE_MCP_ENDPOINT` can select a non-default bridge URL; the
-bridge token still comes from `HYDROXIDE_MCP_TOKEN`.
+within the decompiled corpus. `VOLT_MCP_ENDPOINT` can select a non-default bridge URL; the bridge
+token still comes from `VOLT_MCP_TOKEN`.
