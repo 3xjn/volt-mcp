@@ -10,7 +10,13 @@ const bridge: LiveBridge = {
     return {}
   },
   status() {
-    return { connected: false }
+    return { state: "unpaired", paired: false, connected: false }
+  },
+  preparePairing() {
+    return { state: "unpaired", paired: false, connected: false }
+  },
+  presentPairing() {
+    return { accepted: false, reason: "challenge_not_current" }
   },
   async stop() {},
 }

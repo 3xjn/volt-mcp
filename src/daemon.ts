@@ -1,10 +1,12 @@
 import { type LiveBridge, startBridge } from "./bridge.js"
 import { startHttpServer, type VoltMcpHttpServer } from "./http.js"
+import type { LocalDaemonState } from "./state.js"
 
 export type VoltMcpDaemonOptions = {
-  readonly token: string
+  readonly state: LocalDaemonState
   readonly voltPort: number
   readonly mcpPort: number
+  readonly pairingTimeoutMs?: number
 }
 
 export interface VoltMcpDaemon {
@@ -15,13 +17,29 @@ export interface VoltMcpDaemon {
 }
 
 export async function startVoltMcpDaemon(options: VoltMcpDaemonOptions): Promise<VoltMcpDaemon> {
-  const bridge = startBridge({ token: options.token, port: options.voltPort })
+  const bridge = startBridge({
+    state: options.state,
+    port: options.voltPort,
+    ...(options.pairingTimeoutMs === undefined
+      ? {}
+      : { pairingTimeoutMs: options.pairingTimeoutMs }),
+  })
   let httpServer: VoltMcpHttpServer
+  let stopped = false
+  async function stop(): Promise<void> {
+    if (stopped) {
+      return
+    }
+    stopped = true
+    await httpServer.stop()
+    await bridge.stop()
+  }
   try {
     httpServer = startHttpServer({
       bridge,
-      token: options.token,
+      token: options.state.clientToken,
       port: options.mcpPort,
+      onShutdown: () => void stop(),
     })
   } catch (error) {
     // no-excuse-ok: catch -- startup rollback releases the first listener.
@@ -29,18 +47,10 @@ export async function startVoltMcpDaemon(options: VoltMcpDaemonOptions): Promise
     throw error
   }
 
-  let stopped = false
   return {
     bridge,
     voltPort: bridge.port,
     mcpPort: httpServer.port,
-    async stop() {
-      if (stopped) {
-        return
-      }
-      stopped = true
-      await httpServer.stop()
-      await bridge.stop()
-    },
+    stop,
   }
 }

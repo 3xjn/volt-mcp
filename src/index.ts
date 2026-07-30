@@ -1,22 +1,25 @@
 import { z } from "zod"
 import { startVoltMcpDaemon } from "./daemon.js"
+import { defaultStatePath, loadDaemonState } from "./state.js"
 
 const environmentSchema = z.object({
-  VOLT_MCP_TOKEN: z.string().min(32).max(256),
   VOLT_MCP_VOLT_PORT: z.coerce.number().int().min(1_024).max(65_535).default(32_145),
   VOLT_MCP_HTTP_PORT: z.coerce.number().int().min(1_024).max(65_535).default(32_146),
 })
 
 async function main(): Promise<void> {
   const environment = environmentSchema.parse(process.env)
+  const statePath = defaultStatePath()
+  const state = await loadDaemonState(statePath)
   const daemon = await startVoltMcpDaemon({
-    token: environment.VOLT_MCP_TOKEN,
+    state,
     voltPort: environment.VOLT_MCP_VOLT_PORT,
     mcpPort: environment.VOLT_MCP_HTTP_PORT,
   })
 
   console.error(`Volt agent bridge listening on ws://127.0.0.1:${daemon.voltPort}/volt`)
   console.error(`Volt MCP listening on http://127.0.0.1:${daemon.mcpPort}/mcp`)
+  console.error(`Volt MCP state loaded from ${statePath}`)
 
   let stopping = false
   async function stop(): Promise<void> {

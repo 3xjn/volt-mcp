@@ -1,162 +1,205 @@
-# Volt MCP
+# ⚡ Volt MCP
 
-Agent-facing Roblox code search and runtime inspection for Volt.
+**Live Roblox code search, runtime inspection, and controlled mutation for MCP-capable agents through
+Volt.**
 
-Volt MCP lets Codex inspect the Roblox client currently attached to Volt. It uses:
+Volt MCP gives an agent a structured view into the Roblox client you already have attached to Volt:
 
-- one persistent, user-local Streamable HTTP MCP server;
-- a WebSocket server bound only to `127.0.0.1`;
-- an authenticated Volt auto-execute agent;
-- Volt's documented script inventory and decompiler functions.
+- 🔎 search indexed scripts by path, source text, constants, APIs, or behavior;
+- 📖 read decompiled `LocalScript` and `ModuleScript` source in pages;
+- 🧭 inspect game, Actor, and Lua-state targets plus live closure state;
+- 🛠️ make explicit, guarded runtime changes with restoration support.
 
-## 1. Choose a shared token
+## Quick start
 
-Generate a token once:
+### Requirements
+
+- **Windows**, **Volt**, and **Bun** must already be installed.
+- Setup does not silently download or run either third-party runtime.
+- Start a **new Codex task** after installing or updating the plugin so Codex reloads its tools.
+
+Install the public Codex plugin:
 
 ```powershell
-[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLower()
+codex plugin marketplace add 3xjn/volt-mcp
+codex plugin add volt-mcp@volt-mcp
 ```
 
-Keep it local. Do not commit it.
+No manual `config.toml` edit is required. In a new task, choose **Set up Volt MCP on this PC**, or
+run the same client-neutral setup directly:
 
-## 2. Add the Volt auto-execute loader
+```powershell
+bun run scripts/setup.ts install
+```
 
-Save this as a Volt auto-execute script, replacing `YOUR_TOKEN`:
+Setup installs or updates the stable runtime at `%LOCALAPPDATA%\volt-mcp\runtime`, creates
+daemon-owned state at `%LOCALAPPDATA%\volt-mcp\state.json`, writes a secret-free loader to
+`%LOCALAPPDATA%\Volt\autoexec\volt-mcp.lua`, installs the locked production dependencies, and starts
+the local daemon. It is safe to rerun for updates or repair.
+
+Volt path discovery defaults to `%LOCALAPPDATA%\Volt`. For a custom location:
+
+```powershell
+bun run scripts/setup.ts install --volt-root C:\path\to\Volt
+```
+
+### First run
+
+Setup writes autoexec for the next injected session. It cannot make an already-running injected
+session execute a new file, so **rejoin or reinject Roblox once** after first setup. If Volt exposes
+a console in the current session, this optional one-time bootstrap loads the same installed agent:
 
 ```luau
-getgenv().VoltMcp = {
-    Token = "YOUR_TOKEN",
-}
-
-local source = readfile("volt-mcp/local/volt-agent.lua")
-local chunk, compileError = loadstring(source, "Volt MCP")
-assert(chunk, compileError)()
+loadstring(readfile("volt-mcp/bootstrap.lua"), "Volt MCP bootstrap")()
 ```
 
-For a non-default port, add `Url = "ws://127.0.0.1:PORT/volt"` to the table.
+## Pairing contract
 
-The agent survives character respawns because it is attached to the client, not the character. It
-retries when the local MCP server is not running and replaces an older copy when auto-execute runs
-again. Volt's console reports `Volt MCP successfully loaded` after initialization and
-`Volt MCP authentication successful` whenever the local bridge accepts the connection.
+The Roblox agent connects only to `ws://127.0.0.1:32145/volt` and registers its session without
+opening a dialog. Pairing is deliberately two-phase so the MCP-side code is visible first:
 
-## 3. Start the persistent bridge
+1. Call **`roblox_prepare_pairing`**. It immediately returns a structured challenge with
+   `challengeId`, six-digit `verificationCode`, `expiresAt`, the pending Roblox session, local
+   daemon identity and endpoint, granted scope, persistence, and `nextAction`. **No Windows dialog
+   exists yet.**
+2. Show that result to the user.
+3. Call **`roblox_present_pairing`** with the returned `challengeId`.
+4. Volt's documented, yielding Windows
+   [**Yes/No** messagebox](https://docs.voltbz.net/docs/miscellaneous/messagebox) opens with the same
+   code, session, daemon, scope, and persistence details.
 
-Install the bridge dependencies once:
+Choose **Yes only when the codes match**. Choose **No on any mismatch**.
+
+> [!IMPORTANT]
+> The six-digit code only correlates the pending MCP result with the pending Windows dialog. It is
+> not authorization and it is not a credential. Approval is exclusively the user's **Yes** action.
+
+Yes persists a long random credential locally for future Volt sessions. No, expiry, replacement,
+disconnect, an unavailable messagebox, or any unexpected result stores nothing and leaves pairing
+retryable.
+
+## Trust boundary
+
+- The Volt agent bridge is loopback-only at `ws://127.0.0.1:32145/volt`; the local MCP daemon listens
+  at `http://127.0.0.1:32146/mcp`.
+- Approval grants MCP clients authorized to that daemon the ability to inspect live scripts and
+  runtime state, and to execute or modify client-side Luau.
+- The daemon stores only a SHA-256 hash of the Roblox credential in
+  `%LOCALAPPDATA%\volt-mcp\state.json`.
+- The Roblox-side credential stays in Volt's workspace at `volt-mcp/credential.json`.
+- A separate local MCP-client credential lives in the daemon state file. The bundled stdio adapter
+  reads it directly; editors do not need a token environment variable.
+
+Reset persisted Roblox pairing with:
 
 ```powershell
-cd C:\git\volt-mcp
-bun install
+bun run scripts/setup.ts reset-pairing
 ```
 
-Store the same token in the Windows user environment:
+After resetting, restart or reconnect the active Volt session so its saved workspace credential is
+rejected and removed. Resetting does not remove the separate local MCP-client credential.
 
-```powershell
-[Environment]::SetEnvironmentVariable("VOLT_MCP_TOKEN", "YOUR_TOKEN", "User")
-```
+## Runtime status
 
-Create a user logon task that runs `bun run src/index.ts` directly from this directory. One daemon
-then owns both local listeners for the entire Windows session:
+`roblox_status` is always the recovery surface:
 
-- `ws://127.0.0.1:32145/volt` for the Volt agent;
-- `http://127.0.0.1:32146/mcp` for every Codex thread.
+| State | Meaning |
+| --- | --- |
+| `unpaired` | No saved pairing and no unpaired Roblox session is registered. |
+| `ready_to_pair` | Roblox registered silently and is ready for challenge preparation. |
+| `challenge_ready` | MCP prepared a challenge; no Windows dialog has been shown. |
+| `awaiting_user_approval` | The matching Windows Yes/No dialog is waiting for a decision. |
+| `pairing_declined` | The user declined; nothing was stored and a retry is allowed. |
+| `pairing_expired` | The challenge expired; late results cannot authorize and a retry is allowed. |
+| `waiting_for_roblox` | Pairing is saved, but the Roblox agent is not currently connected. |
+| `connected` | The paired Roblox agent is online and tools can reach it. |
 
-Only one daemon should run. Codex threads no longer start their own copy or compete for Volt's
-fixed port.
+The stdio adapter starts the installed daemon when needed and never waits for Roblox. Before setup,
+it initializes in a safe setup mode without placeholder Roblox tools; start a fresh Codex task after
+setup to load the live tool list.
 
-## 4. Configure Codex
+## Tools by intent
 
-Add this user-level configuration to `C:\Users\<you>\.codex\config.toml`:
+### Connect and pair
 
-```toml
-[mcp_servers.volt_mcp]
-url = "http://127.0.0.1:32146/mcp"
-bearer_token_env_var = "VOLT_MCP_TOKEN"
-required = true
-startup_timeout_sec = 10
-tool_timeout_sec = 120
-enabled_tools = [
-  "roblox_status",
-  "roblox_list_targets",
-  "roblox_list_scripts",
-  "roblox_search_scripts",
-  "roblox_read_script",
-  "roblox_inspect_closure",
-  "roblox_mutate_closure",
-  "roblox_restore_mutation",
-  "roblox_eval",
-]
-default_tools_approval_mode = "approve"
-```
+| Tool | Purpose |
+| --- | --- |
+| `roblox_status` | Read registration, pairing, waiting, and connection state. |
+| `roblox_prepare_pairing` | Create and return a challenge without displaying a dialog. |
+| `roblox_present_pairing` | Present the current challenge in Volt's Windows Yes/No messagebox. |
 
-`required = true` turns a missing daemon into a visible startup failure instead of silently omitting
-the tools. A new Codex task is required after adding or changing an MCP server.
+### Discover and read
 
-## Tools
+| Tool | Purpose |
+| --- | --- |
+| `roblox_list_targets` | List the game state and active Actor/Lua-state selectors. |
+| `roblox_list_scripts` | List cached, running, or loaded client scripts. |
+| `roblox_search_scripts` | Search indexed paths and decompiled text with ranked snippets. |
+| `roblox_read_script` | Read paged decompiler output for a canonical script path. |
 
-- `roblox_status` shows the connected place and player.
-- `roblox_list_targets` lists the game state and active Actor/Lua-state selectors.
-- `roblox_list_scripts` discovers cached, running, or loaded client scripts. By default it excludes
-  inactive scripts under players other than the local player.
-- `roblox_search_scripts` searches indexed paths and decompiled text with ranked line snippets,
-  using the same default exclusion.
-- `roblox_read_script` resolves a canonical instance path and returns paged decompiler output.
-- `roblox_inspect_closure` returns constants, upvalues, nested prototypes, and stable IDs for
-  running closures associated with a script.
-- `roblox_mutate_closure` compare-and-sets one same-type primitive constant or upvalue on a
-  discovered running closure and returns a restore ID.
-- `roblox_restore_mutation` restores that retained original value unless something else changed
-  the live value in the meantime.
-- `roblox_eval` executes an explicit Luau chunk and returns JSON-safe values.
+### Inspect and change
 
-Omitting `target` selects `{ "kind": "game" }`. Actor-aware calls can instead use
-`{ "kind": "actor", "path": "workspace[...]" }` or a state selector returned by
+| Tool | Purpose |
+| --- | --- |
+| `roblox_inspect_closure` | Inspect stable closure identity, constants, upvalues, and prototypes. |
+| `roblox_mutate_closure` | **State-changing:** compare-and-set one primitive constant or upvalue. |
+| `roblox_restore_mutation` | **State-changing:** guarded restoration using a retained mutation ID. |
+| `roblox_eval` | **Destructive:** execute an explicit Luau chunk in the live client. |
+
+## How it works
+
+<details>
+<summary><strong>Targets and script visibility</strong></summary>
+
+Omitting `target` selects `{ "kind": "game" }`. Actor-aware calls can use
+`{ "kind": "actor", "path": "workspace[...]" }` or a state selector from
 `roblox_list_targets`. Actor/state eval uses Volt's Lua-state proxy and a private communication
 channel; script tools validate that the selected script belongs to the requested state.
 
-The script index performs an initial inventory scan, watches script-instance and Actor-state
-changes, and rescans every 15 seconds as a fallback. Decompiled sources are indexed automatically
-in a throttled background queue, with running and loaded scripts first. Source text uses an
-8 MiB/128-entry resident cache; compact source identities and clues survive eviction so the corpus
-can keep becoming searchable without retaining every decompiled file in the Roblox client. A
-search with `refresh: true` rescans inventory and retries prior decompile errors, but never
-synchronously decompiles the whole corpus. Search results report queue progress and cache limits
-under `index`. No external indexer, user-maintained corpus, or manual indexing step is required.
-
 Scripts below another `Player` are excluded from listing, indexing, and search by default because
 their ordinary `PlayerScripts`, `PlayerGui`, and `Backpack` LocalScripts do not execute in the local
-client. Scripts that Volt reports through `getrunningscripts()` or `getloadedmodules()` always remain
-included. Pass `includeOtherPlayers: true` to list or search when investigating replicated
-containers; responses report both the applied setting and the number of excluded scripts. Direct
-read and inspection by canonical path remain unrestricted.
+client. Scripts reported by `getrunningscripts()` or `getloadedmodules()` remain included. Pass
+`includeOtherPlayers: true` when replicated containers matter. Direct read and inspection by
+canonical path remain unrestricted.
 
-Search ranking combines canonical script-path matches, exact decompiled-text matches, source string
-literals, stable API/member-call clues, and a small explicit map from behavior words such as
-`smoothing` or `occlusion` to likely Roblox APIs. Results include the applied query expansion,
-line-numbered snippets, SHA-256 identities for decompiled source and bytecode when available,
-extracted source clues, and string/number constants read from bytecode for the ten highest-ranked
-matches. Line snippets are available while a matching source is resident; stable clues remain
-searchable after source eviction. Decompiled local and upvalue names are not treated as stable
+</details>
+
+<details>
+<summary><strong>Indexing and search</strong></summary>
+
+The script index performs an initial inventory scan, watches script-instance and Actor-state
+changes, and rescans every 15 seconds as a fallback. Decompiled sources enter a throttled background
+queue with running and loaded scripts first. Source text uses an 8 MiB/128-entry resident cache;
+compact identities and clues survive eviction.
+
+`refresh: true` rescans inventory and retries prior decompile errors without synchronously
+decompiling the full corpus. Results expose queue progress and cache limits under `index`; no
+external indexer, maintained corpus, or manual indexing step is required.
+
+Ranking combines canonical path matches, exact decompiled-text matches, source string literals,
+stable API/member-call clues, and a small behavior-to-API map. Results can include query expansion,
+line-numbered snippets, SHA-256 source and bytecode identities, extracted clues, and constants from
+the ten highest-ranked matches. Decompiled local and upvalue names are not treated as stable
 semantic signals.
 
+</details>
+
+<details>
+<summary><strong>Decompiler and mutation caveats</strong></summary>
+
+Decompiler output is an approximation. Literal strings, numeric constants, API calls, and script
+hierarchy usually survive ordinary decompilation; comments, meaningful locals, some source
+locations, and reconstructed control flow may not. Obfuscation can further weaken search results.
+
 Inspection identifies a function by script bytecode hash, runtime closure ID, nested-prototype
-indices, and debug line location. Constants and runtime upvalues are returned by numeric position;
-runtime closure summaries include positional upvalue previews. Mutation uses that same closure plus
-numeric slot mapping, verifies the expected value before writing, verifies the result afterward,
-and retains the original value for guarded restore.
+indices, and debug line. For a narrow reversible edit, inspect the script, choose a returned runtime
+closure, inspect that ID, then mutate it with both `expected` and `value`. Mutation accepts only
+booleans, finite numbers, and strings of the same live type. It verifies before and after writing,
+retains the original value, and returns a `mutationId` for guarded restoration.
 
-Decompiler output is still an approximation. Literal strings, numeric constants, API calls, and
-script hierarchy usually survive ordinary decompilation well, while comments, meaningful locals,
-some source locations, and reconstructed control flow may not. Obfuscation can additionally hide or
-encode constants and flatten calls, so behavior queries can return weak or misleading ranks even
-when exact path or runtime inspection still works.
+`roblox_eval` remains the intentionally broad, destructive escape hatch.
 
-For a narrow reversible edit, first inspect the script without `closureId`, choose one of the
-returned `runtimeClosures`, inspect that ID, then mutate it with both `expected` and `value`.
-Always pass the returned `mutationId` to `roblox_restore_mutation` after verification. Mutation
-accepts only booleans, finite numbers, and strings, and the replacement type must match the live
-value. Complex or intentionally broad changes remain possible through `roblox_eval`, which is
-marked destructive.
+</details>
 
 ## Development
 
@@ -164,11 +207,6 @@ marked destructive.
 bun run check
 ```
 
-`bun run smoke` connects as a fresh MCP client, lists the advertised tools, and checks the attached
-Volt client status.
-
-With a connected client, `bun run evaluate:search` runs a reusable retrieval check against
-four behavior-labeled modules from Roblox's source-available PlayerModule: camera input, keyboard
-movement, camera obstruction, and vehicle-camera smoothing. It reports each expected module's rank
-within the decompiled corpus. `VOLT_MCP_ENDPOINT` can select a non-default bridge URL; the bridge
-token still comes from `VOLT_MCP_TOKEN`.
+- `bun run smoke` lists advertised tools and checks the attached client status.
+- `bun run evaluate:search` runs the connected-client retrieval benchmark.
+- `VOLT_MCP_ENDPOINT` selects a non-default daemon URL; authorization still comes from local state.

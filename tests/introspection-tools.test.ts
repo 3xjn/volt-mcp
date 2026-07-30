@@ -21,7 +21,25 @@ const bridge: LiveBridge = {
     return { accepted: true }
   },
   status() {
-    return { connected: true }
+    return {
+      state: "connected",
+      paired: true,
+      connected: true,
+      agent: {
+        agentVersion: "test",
+        gameId: 0,
+        placeId: 0,
+        jobId: "",
+        playerName: "",
+        userId: 0,
+      },
+    }
+  },
+  preparePairing() {
+    return { state: "unpaired", paired: false, connected: false }
+  },
+  presentPairing() {
+    return { accepted: false, reason: "challenge_not_current" }
   },
   async stop() {},
 }

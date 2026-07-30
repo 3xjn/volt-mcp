@@ -13,6 +13,8 @@ test("uses Volt MCP as the standalone public identity", () => {
     read("README.md"),
     read("package.json"),
     read("scripts/evaluate-search.ts"),
+    read("scripts/mcp.ts"),
+    read("scripts/setup-core.ts"),
     read("src/daemon.ts"),
     read("src/http.ts"),
     read("src/index.ts"),
@@ -31,9 +33,11 @@ test("uses Volt MCP as the standalone public identity", () => {
   expect(publicSurface).not.toMatch(forbiddenBranding)
   expect(publicSurface).toContain('name: "volt-mcp"')
   expect(publicSurface).toContain('title: "Volt MCP for Roblox"')
-  expect(publicSurface).toContain("VOLT_MCP_TOKEN")
+  expect(publicSurface).not.toContain("VOLT_MCP_TOKEN")
   expect(publicSurface).toContain("environment.VoltMcp")
-  expect(publicSurface).toContain("volt-mcp/local/volt-agent.lua")
+  expect(publicSurface).toContain("volt-mcp/volt-agent.lua")
+  expect(publicSurface).toContain('type = "pair_request"')
+  expect(publicSurface).toContain('request.type == "pair_challenge"')
   expect(publicSurface).toContain('print("Volt MCP successfully loaded")')
   expect(publicSurface).toContain('print("Volt MCP authentication successful")')
 })
