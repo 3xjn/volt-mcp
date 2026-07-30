@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "volt_mcp": {
+      "command": "bun",
+      "args": ["run", "./scripts/mcp.ts"],
+      "cwd": ".",
+      "required": false,
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 120,
+      "default_tools_approval_mode": "approve"
+    }
+  }
+}
