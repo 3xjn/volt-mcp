@@ -2,12 +2,19 @@
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local environment = assert(getgenv, "Volt getgenv is required")()
-local configuration = assert(environment.VoltMcp, "Set getgenv().VoltMcp before auto-execute")
-local token = assert(configuration.Token, "VoltMcp.Token is required")
+local configuration = environment.VoltMcp or {}
 local endpoint = configuration.Url or "ws://127.0.0.1:32145/volt"
+local token
 
-assert(type(token) == "string" and #token >= 32, "VoltMcp.Token must be at least 32 characters")
 assert(type(endpoint) == "string", "VoltMcp.Url must be a string")
+
+local credentialRead, credentialSource = pcall(readfile, "volt-mcp/credential.json")
+if credentialRead and type(credentialSource) == "string" then
+    local decoded, credential = pcall(HttpService.JSONDecode, HttpService, credentialSource)
+    if decoded and type(credential) == "table" and type(credential.token) == "string" and #credential.token >= 32 then
+        token = credential.token
+    end
+end
 
 if environment.VoltMcpAgent then
     environment.VoltMcpAgent.Stop()
@@ -1740,6 +1747,7 @@ local stopped = false
 local socket
 local inFlight = 0
 local reconnectScheduled = false
+local activePairing
 
 local function startIndexMaintenance()
     descendantAddedConnection = game.DescendantAdded:Connect(function(instance)
@@ -1787,6 +1795,107 @@ local function send(payload)
     end
 end
 
+local function invalidatePairing()
+    if activePairing then
+        activePairing.valid = false
+        activePairing = nil
+    end
+end
+
+local function showPairingPrompt(connection, challenge)
+    invalidatePairing()
+    local parsedExpiry, expiry = pcall(DateTime.fromIsoDate, challenge.expiresAt)
+    if
+        not parsedExpiry
+        or not expiry
+        or expiry.UnixTimestampMillis <= DateTime.now().UnixTimestampMillis
+    then
+        send({
+            type = "pair_decision",
+            challengeId = challenge.challengeId,
+            approved = false,
+        })
+        return
+    end
+
+    local pairing = {
+        challengeId = challenge.challengeId,
+        connection = connection,
+        expiresAt = expiry.UnixTimestampMillis,
+        valid = true,
+    }
+    activePairing = pairing
+
+    local remainingSeconds = math.max(
+        0,
+        (pairing.expiresAt - DateTime.now().UnixTimestampMillis) / 1000
+    )
+    task.delay(remainingSeconds, function()
+        if activePairing == pairing then
+            invalidatePairing()
+        end
+    end)
+
+    task.spawn(function()
+        local caption = "Volt MCP Pairing"
+        local session = challenge.agent
+        local daemon = challenge.daemon
+        local body = "Volt MCP local daemon pairing request\n\n"
+            .. "Daemon: "
+            .. daemon.name
+            .. "\nEndpoint: "
+            .. daemon.endpoint
+            .. "\n\nRoblox session:\nPlayer: "
+            .. session.playerName
+            .. " (User ID "
+            .. tostring(session.userId)
+            .. ")\nExperience ID: "
+            .. tostring(session.gameId)
+            .. "\nPlace ID: "
+            .. tostring(session.placeId)
+            .. "\nJob ID: "
+            .. session.jobId
+            .. "\n\nIf you choose Yes, MCP clients authorized to this local daemon can inspect live scripts and runtime state, and execute or modify client-side Luau.\n\n"
+            .. "Yes stores a credential and reconnects future Volt sessions until pairing is reset.\n"
+            .. "No stores nothing.\n\nVerification code: "
+            .. challenge.code
+            .. "\nThis code only correlates this dialog with the pending MCP challenge. It is not authorization or a credential.\n\n"
+            .. "Choose Yes only if this code matches the MCP client. Choose No on any mismatch."
+        local succeeded, result = false, nil
+        if type(messagebox) == "function" then
+            succeeded, result = pcall(messagebox, body, caption, 4 + 32)
+        end
+        local current =
+            activePairing == pairing
+            and pairing.valid
+            and not stopped
+            and socket == connection
+            and not connection.IsClosed
+            and DateTime.now().UnixTimestampMillis < pairing.expiresAt
+        if not current then
+            return
+        end
+        invalidatePairing()
+        send({
+            type = "pair_decision",
+            challengeId = pairing.challengeId,
+            approved = succeeded and result == 6,
+        })
+    end)
+end
+
+local function agentInfo()
+    local player = Players.LocalPlayer
+    return {
+        agentVersion = "0.1.0",
+        gameId = game.GameId,
+        placeId = game.PlaceId,
+        jobId = game.JobId,
+        playerName = player and player.Name or "",
+        userId = player and player.UserId or 0,
+    }
+end
+
 local function respond(id, succeeded, value)
     if succeeded then
         local encoded, encodeError = pcall(HttpService.JSONEncode, HttpService, value)
@@ -1805,7 +1914,7 @@ local function respond(id, succeeded, value)
     end
 end
 
-local function handleMessage(message, isBinary)
+local function handleMessage(connection, message, isBinary)
     if isBinary then
         return
     end
@@ -1814,7 +1923,64 @@ local function handleMessage(message, isBinary)
         return
     end
     if request.type == "ready" then
+        invalidatePairing()
         print("Volt MCP authentication successful")
+        return
+    end
+    if request.type == "pair_challenge" then
+        if
+            type(request.challengeId) == "string"
+            and type(request.code) == "string"
+            and type(request.expiresAt) == "string"
+            and type(request.agent) == "table"
+            and type(request.agent.agentVersion) == "string"
+            and type(request.agent.gameId) == "number"
+            and type(request.agent.placeId) == "number"
+            and type(request.agent.jobId) == "string"
+            and type(request.agent.playerName) == "string"
+            and type(request.agent.userId) == "number"
+            and type(request.daemon) == "table"
+            and type(request.daemon.name) == "string"
+            and type(request.daemon.endpoint) == "string"
+        then
+            showPairingPrompt(connection, request)
+        end
+        return
+    end
+    if request.type == "pair_complete" then
+        if type(request.token) ~= "string" or #request.token < 32 then
+            return
+        end
+        local encoded = HttpService:JSONEncode({ version = 1, token = request.token })
+        local persisted, persistError = pcall(function()
+            writefile("volt-mcp/credential.json", encoded)
+        end)
+        if not persisted then
+            warn("Volt MCP could not persist its pairing credential: " .. tostring(persistError))
+            return
+        end
+        token = request.token
+        invalidatePairing()
+        send({ type = "hello", token = token, agent = agentInfo() })
+        return
+    end
+    if request.type == "credential_rejected" then
+        token = nil
+        pcall(delfile, "volt-mcp/credential.json")
+        invalidatePairing()
+        return
+    end
+    if
+        request.type == "pair_denied"
+        or request.type == "pair_expired"
+        or request.type == "pair_stale"
+    then
+        invalidatePairing()
+        return
+    end
+    if request.type == "pair_unavailable" then
+        invalidatePairing()
+        warn("Volt MCP is paired to another credential; run setup reset-pairing to repair it")
         return
     end
     if request.type ~= "request" then
@@ -1865,34 +2031,31 @@ connect = function()
     end
 
     socket = connection
-    socket.OnMessage:Connect(handleMessage)
+    socket.OnMessage:Connect(function(message, isBinary)
+        handleMessage(connection, message, isBinary)
+    end)
     socket.OnClose:Connect(function()
         if stopped or socket ~= connection then
             return
         end
+        invalidatePairing()
         connection:Close()
         socket = nil
         scheduleReconnect()
     end)
 
-    local player = Players.LocalPlayer
-    send({
-        type = "hello",
-        token = token,
-        agent = {
-            agentVersion = "0.1.0",
-            placeId = game.PlaceId,
-            jobId = game.JobId,
-            playerName = player and player.Name or "",
-            userId = player and player.UserId or 0,
-        },
-    })
+    if token then
+        send({ type = "hello", token = token, agent = agentInfo() })
+    else
+        send({ type = "pair_request", agent = agentInfo() })
+    end
 end
 
 local agent = {}
 
 function agent.Stop()
     stopped = true
+    invalidatePairing()
     if descendantAddedConnection then
         descendantAddedConnection:Disconnect()
         descendantAddedConnection = nil

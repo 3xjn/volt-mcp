@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { z } from "zod"
 import type { LiveBridge } from "./bridge.js"
 import {
   evalInput,
@@ -34,11 +35,38 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     "roblox_status",
     {
       title: "Roblox live-client status",
-      description: "Check whether an authenticated Volt client is connected.",
+      description:
+        "Report Roblox registration, pairing, approval, waiting, and connected states. A live challenge includes its short-lived correlation code, expiry, Roblox session, daemon identity, scope, persistence, and next action. The code correlates MCP and Volt dialog surfaces; it is not authorization or a credential.",
       inputSchema: {},
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => textResult(bridge.status()),
+  )
+
+  server.registerTool(
+    "roblox_prepare_pairing",
+    {
+      title: "Prepare Roblox pairing",
+      description:
+        "Create and immediately return a short-lived pairing challenge for the registered Roblox session without displaying a dialog. This replaces any prior challenge. Surface its correlation code to the user before presenting it.",
+      inputSchema: {},
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async () => textResult(bridge.preparePairing()),
+  )
+
+  server.registerTool(
+    "roblox_present_pairing",
+    {
+      title: "Present Roblox pairing approval",
+      description:
+        "Present the current prepared challenge in Volt's Windows Yes/No dialog. Call only after the MCP client has shown the matching correlation code. Wrong, replaced, or expired challenge IDs are rejected.",
+      inputSchema: {
+        challengeId: z.uuid().describe("Current challengeId returned by roblox_prepare_pairing"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    },
+    async ({ challengeId }) => textResult(bridge.presentPairing(challengeId)),
   )
 
   server.registerTool(

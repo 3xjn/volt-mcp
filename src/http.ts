@@ -15,6 +15,7 @@ export type HttpServerOptions = {
   readonly bridge: LiveBridge
   readonly token: string
   readonly port: number
+  readonly onShutdown: () => void
 }
 
 export interface VoltMcpHttpServer {
@@ -68,7 +69,7 @@ export function startHttpServer(options: HttpServerOptions): VoltMcpHttpServer {
     port: options.port,
     async fetch(request) {
       const url = new URL(request.url)
-      if (url.pathname !== "/mcp") {
+      if (url.pathname !== "/mcp" && url.pathname !== "/admin/shutdown") {
         return new Response("Not found", { status: 404 })
       }
       if (!isAuthorized(request, options.token)) {
@@ -76,6 +77,13 @@ export function startHttpServer(options: HttpServerOptions): VoltMcpHttpServer {
           status: 401,
           headers: { "WWW-Authenticate": "Bearer" },
         })
+      }
+      if (url.pathname === "/admin/shutdown") {
+        if (request.method !== "POST") {
+          return new Response("Method not allowed", { status: 405 })
+        }
+        setTimeout(options.onShutdown, 10)
+        return new Response(null, { status: 202 })
       }
 
       const sessionId = request.headers.get(SESSION_HEADER)

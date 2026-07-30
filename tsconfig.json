@@ -20,6 +20,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "tests"],
+  "include": ["src", "scripts/mcp.ts", "scripts/setup-core.ts", "scripts/setup.ts", "tests"],
   "exclude": ["node_modules"]
 }

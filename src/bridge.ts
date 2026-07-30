@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto"
 import type { ServerWebSocket } from "bun"
 import {
   AgentRequestError,
@@ -7,21 +6,17 @@ import {
   BridgeTimeoutError,
   BridgeUnavailableError,
 } from "./errors.js"
+import { createPairingController, type PairingSocketData } from "./pairing.js"
 import {
   type AgentInfo,
   type AgentRequest,
-  helloMessageSchema,
   type RequestMethod,
   responseMessageSchema,
 } from "./protocol.js"
+import type { LocalDaemonState } from "./state.js"
 
-const AUTH_TIMEOUT_MS = 5_000
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
 const STOP_GRACE_MS = 100
-
-type SocketData = {
-  authenticated: boolean
-}
 
 type PendingRequest = {
   readonly resolve: (value: unknown) => void
@@ -29,10 +24,78 @@ type PendingRequest = {
   readonly timeout: ReturnType<typeof setTimeout>
 }
 
-export type BridgeStatus = {
-  readonly connected: boolean
-  readonly agent?: AgentInfo
+export type BridgeStatus =
+  | {
+      readonly state: "unpaired"
+      readonly paired: false
+      readonly connected: false
+    }
+  | {
+      readonly state: "ready_to_pair"
+      readonly paired: false
+      readonly connected: false
+      readonly pendingRobloxSession: AgentInfo
+    }
+  | {
+      readonly state: "challenge_ready" | "awaiting_user_approval"
+      readonly paired: false
+      readonly connected: false
+      readonly challenge: PairingChallengeView
+    }
+  | {
+      readonly state: "pairing_declined" | "pairing_expired"
+      readonly paired: false
+      readonly connected: false
+      readonly pendingRobloxSession: AgentInfo
+      readonly retryable: true
+    }
+  | { readonly state: "waiting_for_roblox"; readonly paired: true; readonly connected: false }
+  | {
+      readonly state: "connected"
+      readonly paired: true
+      readonly connected: true
+      readonly agent: AgentInfo
+    }
+
+export type PairingChallengeView = {
+  readonly challengeId: string
+  readonly verificationCode: string
+  readonly expiresAt: string
+  readonly approvalState: "ready_to_present" | "awaiting_user_approval"
+  readonly pendingRobloxSession: AgentInfo
+  readonly daemon: {
+    readonly name: "Volt MCP"
+    readonly identity: "local_volt_mcp_daemon"
+    readonly endpoint: string
+  }
+  readonly authorization: {
+    readonly codePurpose: "correlation_only"
+    readonly approvalAuthority: "volt_messagebox_yes"
+    readonly persistence: "until_pairing_reset"
+    readonly credentialStoredOnApproval: true
+    readonly credentialStoredOnDecline: false
+    readonly scope: {
+      readonly inspectLiveScripts: true
+      readonly inspectRuntimeState: true
+      readonly executeClientLuau: true
+      readonly modifyClientLuau: true
+    }
+  }
+  readonly nextAction: string
 }
+
+export type PairingPresentationResult =
+  | {
+      readonly accepted: true
+      readonly state: "awaiting_user_approval"
+      readonly paired: false
+      readonly connected: false
+      readonly challenge: PairingChallengeView
+    }
+  | {
+      readonly accepted: false
+      readonly reason: "challenge_not_current" | "challenge_expired"
+    }
 
 export interface LiveBridge {
   readonly port: number
@@ -42,19 +105,18 @@ export interface LiveBridge {
     timeoutMs?: number,
   ): Promise<unknown>
   status(): BridgeStatus
+  preparePairing(): BridgeStatus
+  presentPairing(challengeId: string): PairingPresentationResult
   stop(): Promise<void>
 }
 
 export type BridgeOptions = {
-  readonly token: string
+  readonly state: LocalDaemonState
   readonly port: number
   readonly requestTimeoutMs?: number
-}
-
-function tokenMatches(actual: string, expected: string): boolean {
-  const actualBytes = Buffer.from(actual)
-  const expectedBytes = Buffer.from(expected)
-  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes)
+  readonly pairingTimeoutMs?: number
+  readonly verificationCode?: () => string
+  readonly agentToken?: () => string
 }
 
 function parseJson(source: string): unknown {
@@ -71,8 +133,8 @@ function parseJson(source: string): unknown {
 export function startBridge(options: BridgeOptions): LiveBridge {
   const defaultTimeoutMs = options.requestTimeoutMs ?? 30_000
   const pending = new Map<string, PendingRequest>()
-  const authTimeouts = new Map<ServerWebSocket<SocketData>, ReturnType<typeof setTimeout>>()
-  let activeSocket: ServerWebSocket<SocketData> | undefined
+  const pairing = createPairingController(options)
+  let activeSocket: ServerWebSocket<PairingSocketData> | undefined
   let activeAgent: AgentInfo | undefined
 
   function rejectPending(error: Error): void {
@@ -83,64 +145,47 @@ export function startBridge(options: BridgeOptions): LiveBridge {
     pending.clear()
   }
 
-  const server = Bun.serve<SocketData>({
+  function authenticate(socket: ServerWebSocket<PairingSocketData>, agent: AgentInfo): void {
+    if (activeSocket !== undefined && activeSocket !== socket) {
+      activeSocket.close(1012, "Replaced by a newer Volt client")
+      rejectPending(new BridgeDisconnectedError())
+    }
+    activeSocket = socket
+    activeAgent = agent
+    socket.send(JSON.stringify({ type: "ready" }))
+  }
+
+  const server = Bun.serve<PairingSocketData>({
     hostname: "127.0.0.1",
     port: options.port,
     fetch(request, bunServer) {
-      const url = new URL(request.url)
-      if (url.pathname !== "/volt") {
+      if (new URL(request.url).pathname !== "/volt") {
         return new Response("Not found", { status: 404 })
       }
-      const upgraded = bunServer.upgrade(request, { data: { authenticated: false } })
+      const upgraded = bunServer.upgrade(request, {
+        data: { authenticated: false, pairing: undefined },
+      })
       return upgraded ? undefined : new Response("WebSocket upgrade required", { status: 426 })
     },
     websocket: {
       idleTimeout: 0,
       maxPayloadLength: MAX_PAYLOAD_BYTES,
-      open(socket) {
-        const timeout = setTimeout(() => {
-          socket.close(1008, "Authentication timed out")
-        }, AUTH_TIMEOUT_MS)
-        authTimeouts.set(socket, timeout)
-      },
-      message(socket, message) {
+      open: pairing.open,
+      async message(socket, message) {
         if (typeof message !== "string") {
           socket.close(1003, "Text frames only")
           return
         }
-
         const raw = parseJson(message)
         if (!socket.data.authenticated) {
-          const hello = helloMessageSchema.safeParse(raw)
-          if (!hello.success || !tokenMatches(hello.data.token, options.token)) {
-            socket.close(1008, "Authentication failed")
-            return
-          }
-
-          const authTimeout = authTimeouts.get(socket)
-          if (authTimeout !== undefined) {
-            clearTimeout(authTimeout)
-            authTimeouts.delete(socket)
-          }
-
-          if (activeSocket !== undefined && activeSocket !== socket) {
-            activeSocket.close(1012, "Replaced by a newer Volt client")
-            rejectPending(new BridgeDisconnectedError())
-          }
-
-          socket.data.authenticated = true
-          activeSocket = socket
-          activeAgent = hello.data.agent
-          socket.send(JSON.stringify({ type: "ready" }))
+          await pairing.handle(socket, raw, (agent) => authenticate(socket, agent))
           return
         }
-
         const response = responseMessageSchema.safeParse(raw)
         if (!response.success) {
           socket.close(1007, "Invalid response")
           return
         }
-
         const request = pending.get(response.data.id)
         if (request === undefined) {
           return
@@ -154,11 +199,7 @@ export function startBridge(options: BridgeOptions): LiveBridge {
         }
       },
       close(socket) {
-        const authTimeout = authTimeouts.get(socket)
-        if (authTimeout !== undefined) {
-          clearTimeout(authTimeout)
-          authTimeouts.delete(socket)
-        }
+        pairing.close(socket)
         if (activeSocket === socket) {
           activeSocket = undefined
           activeAgent = undefined
@@ -171,20 +212,109 @@ export function startBridge(options: BridgeOptions): LiveBridge {
   if (boundPort === undefined) {
     throw new BridgeStartupError("Bun did not report the live bridge port")
   }
+  const daemonEndpoint = `ws://127.0.0.1:${boundPort}/volt`
+
+  function challengeView(
+    challenge: NonNullable<ReturnType<typeof pairing.snapshot>["challenge"]>,
+  ): PairingChallengeView {
+    const awaitingApproval = challenge.approvalState === "awaiting_user_approval"
+    return {
+      challengeId: challenge.challengeId,
+      verificationCode: challenge.verificationCode,
+      expiresAt: challenge.expiresAt,
+      approvalState: challenge.approvalState,
+      pendingRobloxSession: challenge.agent,
+      daemon: {
+        name: "Volt MCP",
+        identity: "local_volt_mcp_daemon",
+        endpoint: daemonEndpoint,
+      },
+      authorization: {
+        codePurpose: "correlation_only",
+        approvalAuthority: "volt_messagebox_yes",
+        persistence: "until_pairing_reset",
+        credentialStoredOnApproval: true,
+        credentialStoredOnDecline: false,
+        scope: {
+          inspectLiveScripts: true,
+          inspectRuntimeState: true,
+          executeClientLuau: true,
+          modifyClientLuau: true,
+        },
+      },
+      nextAction: awaitingApproval
+        ? "Compare this code with the Windows “Volt MCP Pairing” dialog. Choose Yes only when they match; choose No on any mismatch. The code only correlates the two pending surfaces and is not authorization or a credential."
+        : "Surface this code to the user, compare it with the Windows “Volt MCP Pairing” dialog, then call roblox_present_pairing with this challengeId. The code only correlates the two pending surfaces and is not authorization or a credential.",
+    }
+  }
+
+  function status(): BridgeStatus {
+    if (activeAgent !== undefined) {
+      return { state: "connected", paired: true, connected: true, agent: activeAgent }
+    }
+    if (options.state.hasAgentCredential()) {
+      return { state: "waiting_for_roblox", paired: true, connected: false }
+    }
+    const snapshot = pairing.snapshot()
+    if (snapshot.challenge !== undefined) {
+      return {
+        state:
+          snapshot.challenge.approvalState === "awaiting_user_approval"
+            ? "awaiting_user_approval"
+            : "challenge_ready",
+        paired: false,
+        connected: false,
+        challenge: challengeView(snapshot.challenge),
+      }
+    }
+    if (snapshot.outcome !== undefined) {
+      return {
+        state: snapshot.outcome.state === "declined" ? "pairing_declined" : "pairing_expired",
+        paired: false,
+        connected: false,
+        pendingRobloxSession: snapshot.outcome.agent,
+        retryable: true,
+      }
+    }
+    return snapshot.pendingAgent === undefined
+      ? { state: "unpaired", paired: false, connected: false }
+      : {
+          state: "ready_to_pair",
+          paired: false,
+          connected: false,
+          pendingRobloxSession: snapshot.pendingAgent,
+        }
+  }
 
   return {
     port: boundPort,
-    status() {
-      return activeAgent === undefined
-        ? { connected: false }
-        : { connected: true, agent: activeAgent }
+    status,
+    preparePairing() {
+      pairing.prepare()
+      return status()
+    },
+    presentPairing(challengeId) {
+      const presentation = pairing.present(challengeId, daemonEndpoint)
+      if (!presentation.accepted) {
+        return presentation
+      }
+      const presentedStatus = status()
+      if (presentedStatus.state !== "awaiting_user_approval") {
+        return { accepted: false, reason: "challenge_not_current" }
+      }
+      return {
+        accepted: true,
+        state: "awaiting_user_approval",
+        paired: false,
+        connected: false,
+        challenge: presentedStatus.challenge,
+      }
     },
     async request(method, params, timeoutMs = defaultTimeoutMs) {
       const socket = activeSocket
       if (socket === undefined) {
         throw new BridgeUnavailableError()
       }
-
       const id = crypto.randomUUID()
       const request: AgentRequest = { type: "request", id, method, params }
       return await new Promise<unknown>((resolve, reject) => {
@@ -198,6 +328,7 @@ export function startBridge(options: BridgeOptions): LiveBridge {
     },
     async stop() {
       rejectPending(new BridgeDisconnectedError())
+      pairing.stop()
       await Promise.race([server.stop(true), Bun.sleep(STOP_GRACE_MS)])
       activeSocket = undefined
       activeAgent = undefined
