@@ -106,7 +106,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "Search indexed Roblox code",
       description:
-        "Search the automatic live decompile cache using behavior words or text, returning ranked snippets, stable identities, constants, and API clues. Inactive scripts under other players are excluded unless explicitly requested.",
+        "Search live script metadata plus source cached by explicit roblox_read_script calls, returning ranked snippets, stable identities, constants, and API clues. This tool never decompiles scripts in the background. Inactive scripts under other players are excluded unless explicitly requested.",
       inputSchema: searchScriptsInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -134,7 +134,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "Read a live Roblox script",
       description:
-        "Resolve a live LocalScript or ModuleScript path and return paged Volt decompiler output.",
+        "Explicitly invoke Volt's native decompiler for one selected LocalScript or ModuleScript path and return paged output. Volt MCP never invokes the decompiler merely because Roblox joined or remained idle.",
       inputSchema: readScriptInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },

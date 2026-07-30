@@ -22,11 +22,14 @@ const searchResultSchema = z.object({
     }),
   ),
   index: z.object({
-    complete: z.boolean(),
     scripts: z.number().int(),
     sources: z.number().int(),
-    queuedSources: z.number().int(),
+    sourceMode: z.literal("explicit_read"),
+    backgroundDecompile: z.literal(false),
   }),
+})
+const listResultSchema = z.object({
+  scripts: z.array(z.object({ path: z.string() })),
 })
 
 const cases = [
@@ -75,6 +78,28 @@ async function search(
   )
 }
 
+async function cacheSelectedSource(client: Client, expectedSuffix: string): Promise<string> {
+  const inventory = listResultSchema.parse(
+    parseTextPayload(
+      await client.callTool({
+        name: "roblox_list_scripts",
+        arguments: { scope: "all", limit: 1_000 },
+      }),
+    ),
+  )
+  const script = inventory.scripts.find(({ path }) => path.endsWith(expectedSuffix))
+  if (!script) {
+    throw new Error(`Could not find evaluation script ending in ${expectedSuffix}`)
+  }
+  parseTextPayload(
+    await client.callTool({
+      name: "roblox_read_script",
+      arguments: { path: script.path, startLine: 1, lineCount: 1 },
+    }),
+  )
+  return script.path
+}
+
 const transport = new StreamableHTTPClientTransport(new URL(environment.VOLT_MCP_ENDPOINT), {
   requestInit: {
     headers: { Authorization: `Bearer ${state.clientToken}` },
@@ -84,47 +109,32 @@ const client = new Client({ name: "volt-mcp-search-evaluation", version: "0.1.0"
 
 try {
   await client.connect(transport)
-  const deadline = Date.now() + 180_000
-  let index = (
-    await search(client, "__volt_mcp_index_progress__", {
-      limit: 1,
-      refresh: true,
-    })
-  ).index
-  while (!index.complete && Date.now() < deadline) {
-    await Bun.sleep(1_000)
-    index = (
-      await search(client, "__volt_mcp_index_progress__", {
-        limit: 1,
-        refresh: false,
-      })
-    ).index
-  }
-  if (!index.complete) {
-    throw new Error(
-      `Search index did not complete within 180 seconds (${index.sources}/${index.scripts}, ${index.queuedSources} queued)`,
-    )
+  const explicitlyCached = []
+  for (const evaluationCase of cases) {
+    explicitlyCached.push(await cacheSelectedSource(client, evaluationCase.expectedSuffix))
   }
 
   const results = []
+  let index: z.infer<typeof searchResultSchema>["index"] | undefined
   for (const evaluationCase of cases) {
     const response = await search(client, evaluationCase.query, {
       limit: 100,
       refresh: false,
     })
-    const index = response.matches.findIndex(({ path }) =>
+    index = response.index
+    const searchRank = response.matches.findIndex(({ path }) =>
       path.endsWith(evaluationCase.expectedSuffix),
     )
-    const match = index >= 0 ? response.matches[index] : undefined
+    const match = searchRank >= 0 ? response.matches[searchRank] : undefined
     results.push({
       query: evaluationCase.query,
       expectedSuffix: evaluationCase.expectedSuffix,
-      rank: index >= 0 ? index + 1 : null,
+      rank: searchRank >= 0 ? searchRank + 1 : null,
       score: match?.score ?? null,
       matchedTerms: match?.matchedTerms ?? null,
     })
   }
-  process.stdout.write(JSON.stringify({ index, cases: results }, null, 2))
+  process.stdout.write(JSON.stringify({ index, explicitlyCached, cases: results }, null, 2))
 } finally {
   await client.close()
 }

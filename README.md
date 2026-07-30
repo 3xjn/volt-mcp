@@ -5,7 +5,7 @@ Volt.**
 
 Volt MCP gives an agent a structured view into the Roblox client you already have attached to Volt:
 
-- 🔎 search indexed scripts by path, source text, constants, APIs, or behavior;
+- 🔎 search live script metadata and explicitly read source by path, text, constants, APIs, or behavior;
 - 📖 read decompiled `LocalScript` and `ModuleScript` source in pages;
 - 🧭 inspect game, Actor, and Lua-state targets plus live closure state;
 - 🛠️ make explicit, guarded runtime changes with restoration support.
@@ -134,8 +134,8 @@ setup to load the live tool list.
 | --- | --- |
 | `roblox_list_targets` | List the game state and active Actor/Lua-state selectors. |
 | `roblox_list_scripts` | List cached, running, or loaded client scripts. |
-| `roblox_search_scripts` | Search indexed paths and decompiled text with ranked snippets. |
-| `roblox_read_script` | Read paged decompiler output for a canonical script path. |
+| `roblox_search_scripts` | Search live paths plus source cached by explicit reads. Never decompiles in the background. |
+| `roblox_read_script` | **Explicit native operation:** decompile one canonical script path and return paged output. |
 
 ### Inspect and change
 
@@ -167,14 +167,15 @@ canonical path remain unrestricted.
 <details>
 <summary><strong>Indexing and search</strong></summary>
 
-The script index performs an initial inventory scan, watches script-instance and Actor-state
-changes, and rescans every 15 seconds as a fallback. Decompiled sources enter a throttled background
-queue with running and loaded scripts first. Source text uses an 8 MiB/128-entry resident cache;
-compact identities and clues survive eviction.
+The script index is demand-driven. Listing or searching scans client-visible script metadata, while
+script-instance and Actor-state changes mark that inventory stale. Volt MCP does not call Volt's
+native decompiler on join, while idle, or during a search. `refresh: true` only forces a fresh
+metadata inventory scan.
 
-`refresh: true` rescans inventory and retries prior decompile errors without synchronously
-decompiling the full corpus. Results expose queue progress and cache limits under `index`; no
-external indexer, maintained corpus, or manual indexing step is required.
+`roblox_read_script` is the single explicit source-decompilation boundary: it decompiles the selected
+canonical path and places that source in an 8 MiB/128-entry resident cache. Later searches can rank
+and quote cached source. The `index` result reports `sourceMode: "explicit_read"` and
+`backgroundDecompile: false`.
 
 Ranking combines canonical path matches, exact decompiled-text matches, source string literals,
 stable API/member-call clues, and a small behavior-to-API map. Results can include query expansion,
@@ -187,9 +188,12 @@ semantic signals.
 <details>
 <summary><strong>Decompiler and mutation caveats</strong></summary>
 
-Decompiler output is an approximation. Literal strings, numeric constants, API calls, and script
-hierarchy usually survive ordinary decompilation; comments, meaningful locals, some source
-locations, and reconstructed control flow may not. Obfuscation can further weaken search results.
+Decompiler output is an approximation, and the native decompiler runs inside Volt rather than a
+memory-safe Volt MCP process. It is invoked only when an MCP client explicitly requests
+`roblox_read_script` for one path, never as join-time or idle maintenance. Literal strings, numeric
+constants, API calls, and script hierarchy usually survive ordinary decompilation; comments,
+meaningful locals, some source locations, and reconstructed control flow may not. Obfuscation can
+further weaken search results.
 
 Inspection identifies a function by script bytecode hash, runtime closure ID, nested-prototype
 indices, and debug line. For a narrow reversible edit, inspect the script, choose a returned runtime

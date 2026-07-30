@@ -246,14 +246,20 @@ test("adds an explicit default game target to existing runtime tools", async () 
   ])
 })
 
-test("keeps whole-corpus decompilation out of the synchronous search path", () => {
+test("keeps native decompilation out of startup, idle, and search paths", () => {
   const agentSource = readFileSync(new URL("../volt-agent.lua", import.meta.url), "utf8")
+  const maintenanceStart = agentSource.indexOf("local function startIndexMaintenance()")
+  const maintenanceEnd = agentSource.indexOf("local function send(payload)", maintenanceStart)
+  const maintenance = agentSource.slice(maintenanceStart, maintenanceEnd)
   const searchStart = agentSource.indexOf("function handlers.searchScripts(params)")
   const searchEnd = agentSource.indexOf("function handlers.readScript(params)", searchStart)
   const searchHandler = agentSource.slice(searchStart, searchEnd)
 
+  expect(maintenance).not.toContain("getIndexedSource")
+  expect(maintenance).not.toContain("decompile")
   expect(searchHandler).toContain("getIndexedSource(entry, false)")
   expect(searchHandler).not.toContain("getIndexedSource(entry, true)")
   expect(agentSource).toContain("MAX_INDEX_SOURCE_BYTES")
-  expect(agentSource).toContain("INDEX_DECOMPILE_DELAY_SECONDS")
+  expect(agentSource).not.toContain("INDEX_DECOMPILE_DELAY_SECONDS")
+  expect(agentSource.match(/pcall\(decompile/g)).toHaveLength(1)
 })

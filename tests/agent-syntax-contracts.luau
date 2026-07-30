@@ -26,4 +26,28 @@ assert(source:find('writefile("volt-mcp/credential.json"', 1, true))
 assert(not source:find("configuration.Token", 1, true))
 assert(not source:find('Instance.new("ScreenGui")', 1, true))
 assert(not source:find("gethui", 1, true))
+
+-- Joining or idling must never invoke Volt's native decompiler. Native faults
+-- cannot be contained by Luau pcall, so decompilation is reserved for an
+-- explicit read of one selected script.
+local maintenanceStart = assert(source:find("local function startIndexMaintenance()", 1, true))
+local maintenanceEnd = assert(source:find("local function send(payload)", maintenanceStart, true))
+local maintenanceSource = source:sub(maintenanceStart, maintenanceEnd - 1)
+assert(not maintenanceSource:find("indexNextQueuedSource", 1, true))
+assert(not maintenanceSource:find("getIndexedSource", 1, true))
+assert(not maintenanceSource:find("decompile", 1, true))
+
+local searchStart = assert(source:find("function handlers.searchScripts(params)", 1, true))
+local searchEnd = assert(source:find("function handlers.readScript(params)", searchStart, true))
+local searchSource = source:sub(searchStart, searchEnd - 1)
+assert(searchSource:find("getIndexedSource(entry, false)", 1, true))
+assert(not searchSource:find("getIndexedSource(entry, true)", 1, true))
+
+local readStart = searchEnd
+local readEnd = assert(source:find("function handlers.inspectClosure(params)", readStart, true))
+local readSource = source:sub(readStart, readEnd - 1)
+assert(readSource:find("getIndexedSource(entry, true)", 1, true))
+local _, nativeDecompileCalls = source:gsub("pcall%(decompile", "")
+assert(nativeDecompileCalls == 1)
+
 print("volt-mcp-agent-syntax-contracts-ok")
