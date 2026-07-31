@@ -38,7 +38,7 @@ export const searchScriptsInput = z.object({
   limit: z.number().int().min(1).max(100).default(20),
   contextLines: z.number().int().min(0).max(10).default(2),
   maxSnippets: z.number().int().min(1).max(10).default(3),
-  refresh: z.boolean().default(false).describe("Force a fresh inventory and decompile pass"),
+  refresh: z.boolean().default(false).describe("Force a fresh script inventory scan"),
   includeOtherPlayers: z
     .boolean()
     .default(false)

@@ -280,12 +280,8 @@ local indexGeneration = 0
 local lastIndexScan = 0
 local indexIncludesOtherPlayers = false
 local indexExcludedOtherPlayerScripts = 0
-local sourceQueue = {}
-local sourceQueueCursor = 1
-local queuedSources = setmetatable({}, { __mode = "k" })
 local cachedSourceBytes = 0
 local cachedSourceCount = 0
-local sourceIndexComplete = false
 local descendantAddedConnection
 local descendantRemovingConnection
 local actorStateConnection
@@ -295,7 +291,6 @@ local runtimeClosureIds = setmetatable({}, { __mode = "k" })
 local runtimeClosures = setmetatable({}, { __mode = "v" })
 
 local INDEX_REFRESH_SECONDS = 15
-local INDEX_DECOMPILE_DELAY_SECONDS = 0.1
 local MAX_INDEX_SOURCE_BYTES = 8 * 1024 * 1024
 local MAX_INDEX_SOURCE_ENTRIES = 128
 local MAX_SEARCH_BYTECODE_ENRICHMENTS = 10
@@ -589,15 +584,6 @@ local function getIndexedSource(entry, allowDecompile)
     return source
 end
 
-local function queueSource(entry)
-    if entry.sourceIndexed or entry.sourceError or queuedSources[entry.instance] then
-        return
-    end
-    queuedSources[entry.instance] = entry
-    table.insert(sourceQueue, entry)
-    sourceIndexComplete = false
-end
-
 local function refreshScriptIndex(retryErrors, includeOtherPlayers)
     local present = {}
     local scripts, excludedOtherPlayerScripts = collectScripts("all", includeOtherPlayers)
@@ -608,16 +594,12 @@ local function refreshScriptIndex(retryErrors, includeOtherPlayers)
             if retryErrors then
                 entry.sourceError = nil
             end
-            queueSource(entry)
         end
     end
     for instance in next, scriptIndex do
         if not present[instance] then
             local entry = scriptIndex[instance]
             dropCachedSource(entry)
-            if queuedSources[instance] == entry then
-                queuedSources[instance] = nil
-            end
             scriptIndex[instance] = nil
         end
     end
@@ -638,30 +620,6 @@ local function ensureScriptIndex(forceScan, includeOtherPlayers)
     then
         refreshScriptIndex(forceScan, includeOtherPlayers)
     end
-end
-
-local function indexNextQueuedSource()
-    while sourceQueueCursor <= #sourceQueue do
-        local entry = sourceQueue[sourceQueueCursor]
-        sourceQueueCursor += 1
-        if entry and entry.instance then
-            if queuedSources[entry.instance] == entry then
-                queuedSources[entry.instance] = nil
-            end
-            if scriptIndex[entry.instance] == entry and not entry.sourceIndexed and not entry.sourceError then
-                getIndexedSource(entry, true)
-                return true
-            end
-        end
-    end
-    sourceQueue = {}
-    sourceQueueCursor = 1
-    sourceIndexComplete = true
-    return false
-end
-
-local function queuedSourceCount()
-    return math.max(0, #sourceQueue - sourceQueueCursor + 1)
 end
 
 local function indexStats()
@@ -689,8 +647,8 @@ local function indexStats()
         residentSourceBytes = cachedSourceBytes,
         maxResidentSources = MAX_INDEX_SOURCE_ENTRIES,
         maxResidentSourceBytes = MAX_INDEX_SOURCE_BYTES,
-        queuedSources = queuedSourceCount(),
-        complete = sourceIndexComplete,
+        sourceMode = "explicit_read",
+        backgroundDecompile = false,
         decompileErrors = errors,
         includeOtherPlayers = indexIncludesOtherPlayers,
         excludedOtherPlayerScripts = indexExcludedOtherPlayerScripts,
@@ -1038,7 +996,6 @@ end
 
 local function describeScript(instance)
     local entry = updateIndexEntry(instance)
-    getIndexedSource(entry, true)
     return {
         name = entry.name,
         className = entry.className,
@@ -1751,19 +1708,12 @@ local activePairing
 
 local function startIndexMaintenance()
     descendantAddedConnection = game.DescendantAdded:Connect(function(instance)
-        if instance:IsA("LuaSourceContainer") then
-            queueSource(updateIndexEntry(instance))
-            indexDirty = true
-        elseif instance:IsA("Actor") then
+        if instance:IsA("LuaSourceContainer") or instance:IsA("Actor") then
             indexDirty = true
         end
     end)
     descendantRemovingConnection = game.DescendantRemoving:Connect(function(instance)
-        if instance:IsA("LuaSourceContainer") then
-            dropCachedSource(scriptIndex[instance])
-            scriptIndex[instance] = nil
-            queuedSources[instance] = nil
-        elseif instance:IsA("Actor") then
+        if instance:IsA("LuaSourceContainer") or instance:IsA("Actor") then
             indexDirty = true
         end
     end)
@@ -1771,21 +1721,6 @@ local function startIndexMaintenance()
         actorStateConnection = on_actor_state_created:Connect(function()
             indexDirty = true
         end)
-    end)
-
-    task.spawn(function()
-        pcall(refreshScriptIndex, false)
-        while not stopped do
-            if indexDirty or os.clock() - lastIndexScan >= INDEX_REFRESH_SECONDS then
-                pcall(refreshScriptIndex, false)
-            end
-            local succeeded, indexed = pcall(indexNextQueuedSource)
-            if succeeded and indexed then
-                task.wait(INDEX_DECOMPILE_DELAY_SECONDS)
-            else
-                task.wait(1)
-            end
-        end
     end)
 end
 
