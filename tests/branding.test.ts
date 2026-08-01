@@ -8,12 +8,19 @@ function read(path: string): string {
 }
 
 test("uses Volt MCP as the standalone public identity", () => {
-  const packageJson = JSON.parse(read("package.json")) as { readonly name?: unknown }
+  const packageJson = JSON.parse(read("package.json")) as {
+    readonly name?: unknown
+    readonly version?: unknown
+  }
+  const pluginJson = JSON.parse(read(".codex-plugin/plugin.json")) as {
+    readonly version?: unknown
+  }
   const publicSurface = [
     read("README.md"),
     read("package.json"),
     read("scripts/evaluate-search.ts"),
     read("scripts/mcp.ts"),
+    read("scripts/setup-artifacts.ts"),
     read("scripts/setup-core.ts"),
     read("src/daemon.ts"),
     read("src/http.ts"),
@@ -30,6 +37,8 @@ test("uses Volt MCP as the standalone public identity", () => {
   )
 
   expect(packageJson.name).toBe("@3xjn/volt-mcp")
+  expect(packageJson.version).toBe("0.1.1")
+  expect(pluginJson.version).toBe(packageJson.version)
   expect(publicSurface).not.toMatch(forbiddenBranding)
   expect(publicSurface).toContain('name: "volt-mcp"')
   expect(publicSurface).toContain('title: "Volt MCP for Roblox"')

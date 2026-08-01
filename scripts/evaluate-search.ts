@@ -105,7 +105,7 @@ const transport = new StreamableHTTPClientTransport(new URL(environment.VOLT_MCP
     headers: { Authorization: `Bearer ${state.clientToken}` },
   },
 })
-const client = new Client({ name: "volt-mcp-search-evaluation", version: "0.1.0" })
+const client = new Client({ name: "volt-mcp-search-evaluation", version: "0.1.1" })
 
 try {
   await client.connect(transport)

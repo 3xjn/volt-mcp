@@ -9,7 +9,7 @@ const DEFAULT_ENDPOINT = "http://127.0.0.1:32146/mcp"
 const SESSION_HEADER = "mcp-session-id"
 const SERVER_INFO = {
   name: "volt-mcp",
-  version: "0.1.0",
+  version: "0.1.1",
   title: "Volt MCP for Roblox",
   icons: [
     {
