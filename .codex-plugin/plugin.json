@@ -1,6 +1,6 @@
 {
   "name": "volt-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent-facing Roblox code search and runtime inspection through Volt.",
   "author": {
     "name": "3xjn",

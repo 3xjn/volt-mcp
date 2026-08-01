@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto"
-import { copyFile, cp, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
+import { copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
+import { artifactsCurrent, BOOTSTRAP_COMMAND, LOADER } from "./setup-artifacts.js"
 
 type SetupState = {
   readonly version: 1
@@ -24,15 +25,9 @@ export type SetupStatus = {
   readonly paired: boolean
   readonly runtimeRoot: string
   readonly voltRoot: string
-  readonly firstRunAction: string
-  readonly bootstrapCommand: string
+  readonly firstRunAction?: string
+  readonly bootstrapCommand?: string
 }
-
-const LOADER = `local source = readfile("volt-mcp/volt-agent.lua")
-local chunk, compileError = loadstring(source, "Volt MCP")
-assert(chunk, compileError)()
-`
-const BOOTSTRAP_COMMAND = 'loadstring(readfile("volt-mcp/bootstrap.lua"), "Volt MCP bootstrap")()'
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -85,18 +80,6 @@ async function writeState(path: string, state: SetupState): Promise<void> {
     mode: 0o600,
   })
   await rename(temporaryPath, path)
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path)
-    return true
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return false
-    }
-    throw error
-  }
 }
 
 async function copyRuntime(options: InstallOptions): Promise<void> {
@@ -152,7 +135,7 @@ async function daemonAvailable(clientToken: string): Promise<boolean> {
         params: {
           protocolVersion: "2025-06-18",
           capabilities: {},
-          clientInfo: { name: "volt-mcp-setup", version: "0.1.0" },
+          clientInfo: { name: "volt-mcp-setup", version: "0.1.1" },
         },
       }),
     })
@@ -205,18 +188,13 @@ async function startDaemon(options: InstallOptions, state: SetupState): Promise<
 
 export async function inspectSetup(options: InstallOptions): Promise<SetupStatus> {
   const state = await readState(options.statePath)
-  const installed =
-    state !== undefined &&
-    (await pathExists(join(options.runtimeRoot, "src", "index.ts"))) &&
-    (await pathExists(join(options.voltRoot, "autoexec", "volt-mcp.lua")))
+  const installed = state !== undefined && (await artifactsCurrent(options))
   return {
     installed,
     daemonAvailable: state === undefined ? false : await daemonAvailable(state.clientToken),
     paired: state?.agentTokenHash !== undefined,
     runtimeRoot: options.runtimeRoot,
     voltRoot: options.voltRoot,
-    firstRunAction: "Rejoin or reinject Roblox once so Volt runs the new autoexec bootstrap.",
-    bootstrapCommand: BOOTSTRAP_COMMAND,
   }
 }
 
@@ -236,7 +214,11 @@ export async function installVoltMcp(options: InstallOptions): Promise<SetupStat
   if (options.startDaemon && !(await startDaemon(options, state))) {
     throw new Error("Volt MCP daemon did not become ready; stop an older daemon and rerun setup")
   }
-  return await inspectSetup(options)
+  return {
+    ...(await inspectSetup(options)),
+    firstRunAction: "Rejoin or reinject Roblox once so Volt runs the new autoexec bootstrap.",
+    bootstrapCommand: BOOTSTRAP_COMMAND,
+  }
 }
 
 export async function resetPairing(statePath: string): Promise<void> {

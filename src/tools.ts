@@ -20,7 +20,7 @@ function textResult(value: unknown) {
 export function createMcpServer(bridge: LiveBridge): McpServer {
   const server = new McpServer({
     name: "volt-mcp",
-    version: "0.1.0",
+    version: "0.1.1",
     title: "Volt MCP for Roblox",
     icons: [
       {

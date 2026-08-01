@@ -25,6 +25,17 @@ codex plugin marketplace add 3xjn/volt-mcp
 codex plugin add volt-mcp@volt-mcp
 ```
 
+To update an existing Codex installation to the latest marketplace release:
+
+```powershell
+codex plugin marketplace upgrade volt-mcp
+codex plugin remove volt-mcp@volt-mcp
+codex plugin add volt-mcp@volt-mcp
+```
+
+Start a new Codex task after reinstalling. Setup compares the installed autoexec loader, workspace
+bootstrap, and Roblox agent with the plugin release and automatically rewrites stale copies.
+
 No manual `config.toml` edit is required. In a new task, choose **Set up Volt MCP on this PC**, or
 run the same client-neutral setup directly:
 

@@ -1822,7 +1822,7 @@ end
 local function agentInfo()
     local player = Players.LocalPlayer
     return {
-        agentVersion = "0.1.0",
+        agentVersion = "0.1.1",
         gameId = game.GameId,
         placeId = game.PlaceId,
         jobId = game.JobId,

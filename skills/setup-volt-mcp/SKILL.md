@@ -17,10 +17,11 @@ or managing credentials manually.
    bun run "<plugin-root>\scripts\setup.ts" check
    ```
 
-3. If the returned JSON has `installed: true` and `daemonAvailable: true`, do not reinstall.
+3. If the returned JSON has `installed: true` and `daemonAvailable: true`, the installed autoexec,
+   bootstrap, and agent match this plugin release. Do not reinstall or repeat first-run guidance.
 4. If Bun is missing, explain that Bun is the only dependency the script does not install. Help the
    user install Bun, then rerun the check.
-5. When setup is incomplete, run:
+5. When setup is incomplete or an installed artifact is stale, run:
 
    ```text
    bun run "<plugin-root>\scripts\setup.ts" install
@@ -28,8 +29,10 @@ or managing credentials manually.
 
 6. Never print, log, read aloud, or quote either persisted credential. The installer reports only
    non-secret status and the safe one-time bootstrap command.
-7. Be explicit that installing autoexec does not execute it in an already-running injected session.
-   Ask the user to rejoin or reinject once, or use the returned local bootstrap command in Volt.
+7. Only after `install`, use its returned `firstRunAction` and `bootstrapCommand`. Installing
+   autoexec does not execute it in an already-running injected session, so ask the user to rejoin or
+   reinject once, or use that returned local bootstrap command in Volt. A healthy `check` omits
+   these one-time fields.
 8. Once the unpaired Roblox agent is registered, call `roblox_prepare_pairing`. Surface its complete
    structured challenge to the user before continuing. This call must not show a Windows dialog.
 9. Only after the user can see the returned code, call `roblox_present_pairing` with that exact
