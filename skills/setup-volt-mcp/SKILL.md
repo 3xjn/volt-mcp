@@ -13,10 +13,13 @@ not use Linux Bun: the resulting daemon would listen on WSL loopback while Volt 
 loopback.
 
 1. Resolve the plugin root by walking two directories up from this `SKILL.md`.
-2. Run the script in check mode first:
+2. Set the command working directory to that plugin root, then run the script by relative path. This
+   matters in WSL because Windows executables do not translate `/mnt/c/...` strings passed as script
+   arguments:
 
    ```text
-   bun.exe run "<plugin-root>\scripts\setup.ts" check
+   cd "<plugin-root>"
+   bun.exe run ./scripts/setup.ts check
    ```
 
 3. If the returned JSON has `installed: true` and `daemonAvailable: true`, the installed autoexec,
@@ -26,7 +29,8 @@ loopback.
 5. When setup is incomplete or an installed artifact is stale, run:
 
    ```text
-   bun.exe run "<plugin-root>\scripts\setup.ts" install
+   cd "<plugin-root>"
+   bun.exe run ./scripts/setup.ts install
    ```
 
 6. Never print, log, read aloud, or quote either persisted credential. The installer reports only

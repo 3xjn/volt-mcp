@@ -18,6 +18,7 @@ test("uses Volt MCP as the standalone public identity", () => {
   const mcpJson = JSON.parse(read(".mcp.json")) as {
     readonly mcpServers?: { readonly volt_mcp?: { readonly command?: unknown } }
   }
+  const setupSkill = read("skills/setup-volt-mcp/SKILL.md")
   const publicSurface = [
     read("README.md"),
     read("package.json"),
@@ -43,6 +44,9 @@ test("uses Volt MCP as the standalone public identity", () => {
   expect(packageJson.version).toBe("0.1.1")
   expect(pluginJson.version).toBe(packageJson.version)
   expect(mcpJson.mcpServers?.volt_mcp?.command).toBe("bun.exe")
+  expect(setupSkill).toContain("bun.exe run ./scripts/setup.ts check")
+  expect(setupSkill).toContain("bun.exe run ./scripts/setup.ts install")
+  expect(setupSkill).not.toContain('bun.exe run "<plugin-root>')
   expect(publicSurface).not.toMatch(forbiddenBranding)
   expect(publicSurface).toContain('name: "volt-mcp"')
   expect(publicSurface).toContain('title: "Volt MCP for Roblox"')
