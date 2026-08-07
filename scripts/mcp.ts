@@ -106,7 +106,7 @@ function startDaemon(runtimeRoot: string): void {
     return
   }
   const child = Bun.spawn({
-    cmd: ["bun", "run", "src/index.ts"],
+    cmd: [process.execPath, "run", "src/index.ts"],
     cwd: runtimeRoot,
     env: { ...process.env, VOLT_MCP_STATE_PATH: statePath },
     stdin: "ignore",

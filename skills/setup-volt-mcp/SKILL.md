@@ -5,16 +5,18 @@ description: Set up or repair the local Volt MCP runtime and Roblox pairing. Use
 
 # Set up Volt MCP
 
-Requires Windows with Bun and Volt installed.
+Requires Windows with Volt and Windows Bun (`bun.exe`) installed. The calling agent may run in WSL.
 
-Use the bundled client-neutral Bun setup instead of editing `config.toml`, creating scheduled tasks,
-or managing credentials manually.
+Use the bundled client-neutral setup instead of editing `config.toml`, creating scheduled tasks,
+or managing credentials manually. Always launch it with Windows `bun.exe`, including from WSL. Do
+not use Linux Bun: the resulting daemon would listen on WSL loopback while Volt connects to Windows
+loopback.
 
 1. Resolve the plugin root by walking two directories up from this `SKILL.md`.
 2. Run the script in check mode first:
 
    ```text
-   bun run "<plugin-root>\scripts\setup.ts" check
+   bun.exe run "<plugin-root>\scripts\setup.ts" check
    ```
 
 3. If the returned JSON has `installed: true` and `daemonAvailable: true`, the installed autoexec,
@@ -24,7 +26,7 @@ or managing credentials manually.
 5. When setup is incomplete or an installed artifact is stale, run:
 
    ```text
-   bun run "<plugin-root>\scripts\setup.ts" install
+   bun.exe run "<plugin-root>\scripts\setup.ts" install
    ```
 
 6. Never print, log, read aloud, or quote either persisted credential. The installer reports only

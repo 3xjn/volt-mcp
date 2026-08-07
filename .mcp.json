@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "volt_mcp": {
-      "command": "bun",
+      "command": "bun.exe",
       "args": ["run", "./scripts/mcp.ts"],
       "cwd": ".",
       "required": false,
