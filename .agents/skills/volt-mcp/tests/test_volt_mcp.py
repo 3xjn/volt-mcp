@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, MagicMock, patch
 
 MODULE_PATH = Path(__file__).parents[1] / "src" / "volt_mcp" / "__init__.py"
 SPEC = importlib.util.spec_from_file_location("volt_mcp_under_test", MODULE_PATH)
@@ -54,7 +56,37 @@ class VoltMcpSkillTests(unittest.TestCase):
                 {"tool": "roblox_search_scripts", "arguments": {"query": "Players"}},
             )
 
-        import asyncio
+        asyncio.run(exercise())
+
+    def test_exchange_launches_relative_adapter_with_windows_bun(self) -> None:
+        async def exercise() -> None:
+            with TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "scripts").mkdir()
+                (root / "scripts" / "mcp.ts").write_text("// adapter")
+                stdout = b'{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}\n'
+                process = MagicMock(returncode=0)
+                process.communicate = AsyncMock(return_value=(stdout, b""))
+                spawn = AsyncMock(return_value=process)
+
+                with patch.object(volt_mcp, "_repository_root", return_value=root), patch.object(
+                    volt_mcp, "_windows_bun", return_value="C:/Bun/bun.exe"
+                ), patch.object(volt_mcp.asyncio, "create_subprocess_exec", spawn):
+                    result = await volt_mcp._exchange(volt_mcp._messages("tools/list", None))
+
+                self.assertEqual(result, {"tools": []})
+                spawn.assert_awaited_once_with(
+                    "C:/Bun/bun.exe",
+                    "run",
+                    "./scripts/mcp.ts",
+                    cwd=str(root),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                payload = process.communicate.await_args.args[0].decode()
+                self.assertIn('"method":"initialize"', payload)
+                self.assertIn('"method":"tools/list"', payload)
 
         asyncio.run(exercise())
 

@@ -47,6 +47,9 @@ test("uses Volt MCP as the standalone public identity", () => {
   expect(setupSkill).toContain("bun.exe run ./scripts/setup.ts check")
   expect(setupSkill).toContain("bun.exe run ./scripts/setup.ts install")
   expect(setupSkill).not.toContain('bun.exe run "<plugin-root>')
+  expect(read("scripts/mcp.ts")).toContain(
+    'cmd: [process.execPath, "run", "src/index.ts"]',
+  )
   expect(publicSurface).not.toMatch(forbiddenBranding)
   expect(publicSurface).toContain('name: "volt-mcp"')
   expect(publicSurface).toContain('title: "Volt MCP for Roblox"')

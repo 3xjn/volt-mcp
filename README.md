@@ -64,8 +64,8 @@ unable to reach the bridge. Use **Windows Bun** (`bun.exe`) from WSL instead:
 bun.exe run scripts/setup.ts install
 ```
 
-The bundled MCP configuration already uses `bun.exe`. For any other stdio MCP client, configure the
-same Windows-host command with the absolute path to this clone as its working directory:
+The bundled MCP configuration already uses `bun.exe`. For a stdio MCP client that supports a `cwd`
+extension, set the clone as its working directory and keep the script argument relative:
 
 ```json
 {
@@ -75,9 +75,19 @@ same Windows-host command with the absolute path to this clone as its working di
 }
 ```
 
-Keep the clone on a Windows-mounted path such as `/mnt/c/...` so `bun.exe` can resolve the working
-directory. If `bun.exe` is not inherited on WSL's `PATH`, use its absolute `/mnt/c/.../bun.exe` path
-in the client configuration. Do not substitute Linux Bun.
+If the client does not support `cwd`, pass the script as an absolute **Windows-form** argument:
+
+```json
+{
+  "command": "bun.exe",
+  "args": ["run", "C:\\path\\to\\volt-mcp\\scripts\\mcp.ts"]
+}
+```
+
+Keep the clone on a Windows-mounted path such as `/mnt/c/...` so `bun.exe` can access it. WSL does
+not translate `/mnt/c/...` strings passed as arguments to Windows executables, so use `wslpath -w`
+when generating the second form. If `bun.exe` is not inherited on WSL's `PATH`, use its absolute
+`/mnt/c/.../bun.exe` path as `command`. Do not substitute Linux Bun.
 
 #### Prime Agent
 
