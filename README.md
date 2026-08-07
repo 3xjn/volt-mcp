@@ -1,71 +1,110 @@
-# ⚡ Volt MCP
+<p align="center">
+  <p align="center">
+    <img width="150" height="150" src="assets/volt-mcp-icon.png" alt="Volt MCP logo">
+  </p>
+  <h1 align="center"><b>Volt MCP</b></h1>
+  <p align="center">
+    Give your AI agent eyes and hands inside a live Roblox client.
+    <br />
+    <a href="#-quick-start"><strong>Get connected →</strong></a>
+  </p>
+</p>
 
-**Live Roblox code search, runtime inspection, and controlled mutation for MCP-capable agents through
-Volt.**
+<div align="center">
 
-Volt MCP gives an agent a structured view into the Roblox client you already have attached to Volt:
+![Windows](https://img.shields.io/badge/Windows-0078D4?style=for-the-badge&logo=windows11&logoColor=white)
+![Bun](https://img.shields.io/badge/Bun-fbf0df?style=for-the-badge&logo=bun&logoColor=14151a)
+![MCP](https://img.shields.io/badge/MCP-e6ff55?style=for-the-badge&logoColor=14151a)
 
-- 🔎 search live script metadata and explicitly read source by path, text, constants, APIs, or behavior;
-- 📖 read decompiled `LocalScript` and `ModuleScript` source in pages;
-- 🧭 inspect game, Actor, and Lua-state targets plus live closure state;
-- 🛠️ make explicit, guarded runtime changes with restoration support.
+</div>
 
-## Quick start
+**Volt MCP** connects MCP-capable agents to the Roblox client already attached to
+[Volt](https://docs.voltbz.net/). Search live scripts, read decompiled source on demand, inspect
+runtime state, and make guarded changes without turning your client into a black box.
+
+- 🔎 **Find the right script** by path, source text, constants, APIs, or behavior
+- 📖 **Read source deliberately** — nothing decompiles in the background
+- 🧭 **Inspect deeper** across game, Actor, Lua-state, and closure targets
+- 🛠️ **Change carefully** with compare-and-set mutations and guarded restoration
+
+## ⚡ Quick start
 
 ### Requirements
 
-- **Windows**, **Volt**, and **Bun** must already be installed.
-- Setup does not silently download or run either third-party runtime.
-- Start a **new Codex task** after installing or updating the plugin so Codex reloads its tools.
+[Windows](https://www.microsoft.com/windows), [Volt](https://voltbz.net/), and
+[Bun](https://bun.sh/) must already be installed. Volt MCP never silently downloads either runtime.
 
-Install the public Codex plugin:
+### Install for Codex
 
 ```powershell
 codex plugin marketplace add 3xjn/volt-mcp
 codex plugin add volt-mcp@volt-mcp
 ```
 
-To update an existing Codex installation to the latest marketplace release:
-
-```powershell
-codex plugin marketplace upgrade volt-mcp
-codex plugin remove volt-mcp@volt-mcp
-codex plugin add volt-mcp@volt-mcp
-```
-
-Start a new Codex task after reinstalling. Setup compares the installed autoexec loader, workspace
-bootstrap, and Roblox agent with the plugin release and automatically rewrites stale copies.
-
-No manual `config.toml` edit is required. In a new task, choose **Set up Volt MCP on this PC**, or
-run the same client-neutral setup directly:
+Start a **new Codex task**, then choose **Set up Volt MCP on this PC**. You can also run setup
+manually:
 
 ```powershell
 bun.exe run scripts/setup.ts install
 ```
 
-Setup installs or updates the stable runtime at `%LOCALAPPDATA%\volt-mcp\runtime`, creates
-daemon-owned state at `%LOCALAPPDATA%\volt-mcp\state.json`, writes a secret-free loader to
-`%LOCALAPPDATA%\Volt\autoexec\volt-mcp.lua`, installs the locked production dependencies, and starts
-the local daemon. It is safe to rerun for updates or repair.
+Setup is safe to rerun for updates or repair. It installs the local runtime, writes Volt's autoexec
+loader, installs locked dependencies, and starts the daemon.
 
-Volt path discovery defaults to `%LOCALAPPDATA%\Volt`. For a custom location:
+> [!TIP]
+> Rejoin or reinject Roblox once after first setup so Volt can run the new autoexec loader.
+
+### Pair once
+
+1. Ask your agent to connect to Roblox.
+2. It prepares a six-digit challenge, then opens Volt's matching **Yes/No** dialog.
+3. Confirm only when both codes match.
+
+Approval is stored locally for future sessions. To start over:
 
 ```powershell
-bun.exe run scripts/setup.ts install --volt-root C:\path\to\Volt
+bun.exe run scripts/setup.ts reset-pairing
 ```
 
-### Agents running in WSL
+## 🧰 Tools
 
-Keep the entire Volt MCP runtime on the Windows host. WSL and Windows have different loopback
-namespaces in common WSL2 configurations, so launching this project with Linux Bun can leave Volt
-unable to reach the bridge. Use **Windows Bun** (`bun.exe`) from WSL instead:
+| Intent | Tools |
+| --- | --- |
+| **Connect** | `roblox_status`, `roblox_prepare_pairing`, `roblox_present_pairing` |
+| **Discover** | `roblox_list_targets`, `roblox_list_scripts`, `roblox_search_scripts` |
+| **Read** | `roblox_read_script`, `roblox_inspect_closure` |
+| **Change** | `roblox_mutate_closure`, `roblox_restore_mutation`, `roblox_eval` |
+
+`roblox_status` is always the recovery surface. It tells the agent whether Roblox is ready to pair,
+waiting for approval, disconnected, or fully connected.
+
+## 🛡️ Safety by design
+
+- Both listeners are loopback-only: `ws://127.0.0.1:32145/volt` and
+  `http://127.0.0.1:32146/mcp`.
+- Reading source is an explicit native operation; search never decompiles scripts behind your back.
+- Pairing shows the session, daemon, scope, persistence, and matching code before approval.
+- Narrow edits require the expected live value, verify the write, and return a restoration ID.
+- `roblox_eval` is intentionally marked destructive — broad power should look broad.
+- The daemon stores a SHA-256 hash of the Roblox credential, not the credential itself.
+
+> [!IMPORTANT]
+> The six-digit code identifies the pairing attempt; it is not a credential. Authorization happens
+> only when you choose **Yes** in Volt's dialog.
+
+## 🔌 Other clients
+
+<details>
+<summary><b>Run an MCP client from WSL</b></summary>
+
+Keep the runtime on Windows and use **Windows Bun** (`bun.exe`). WSL2 and Windows commonly have
+separate loopback namespaces, so Linux Bun cannot host a bridge that Volt can reach.
 
 ```bash
 bun.exe run scripts/setup.ts install
 ```
 
-The bundled MCP configuration already uses `bun.exe`. For a stdio MCP client that supports a `cwd`
-extension, set the clone as its working directory and keep the script argument relative:
+For clients that support `cwd`:
 
 ```json
 {
@@ -75,7 +114,7 @@ extension, set the clone as its working directory and keep the script argument r
 }
 ```
 
-If the client does not support `cwd`, pass the script as an absolute **Windows-form** argument:
+Otherwise, pass an absolute Windows-form script path:
 
 ```json
 {
@@ -84,16 +123,16 @@ If the client does not support `cwd`, pass the script as an absolute **Windows-f
 }
 ```
 
-Keep the clone on a Windows-mounted path such as `/mnt/c/...` so `bun.exe` can access it. WSL does
-not translate `/mnt/c/...` strings passed as arguments to Windows executables, so use `wslpath -w`
-when generating the second form. If `bun.exe` is not inherited on WSL's `PATH`, use its absolute
-`/mnt/c/.../bun.exe` path as `command`. Do not substitute Linux Bun.
+Keep the clone under `/mnt/c/...`; use `wslpath -w` when generating Windows-form arguments. Do not
+substitute Linux Bun.
 
-#### Prime Agent
+</details>
 
-This repository includes a Python-backed Prime skill at `.agents/skills/volt-mcp`. Prime discovers
-it automatically when started in this repository. To use it from other working directories, add the
-skill directory to `~/.prime/agent/settings.json` and reload Prime:
+<details>
+<summary><b>Use the bundled Prime Agent skill</b></summary>
+
+Prime discovers `.agents/skills/volt-mcp` automatically inside this repository. To use it from any
+working directory, add the skill root to `~/.prime/agent/settings.json`, then reload Prime:
 
 ```json
 {
@@ -101,179 +140,39 @@ skill directory to `~/.prime/agent/settings.json` and reload Prime:
 }
 ```
 
-Then Prime can use `await volt_mcp.list_tools()`, `await volt_mcp.roblox_status()`, and the other
-advertised `roblox_*` methods. The skill talks to the bundled stdio adapter through `bun.exe`; it
-does not expose either loopback listener to WSL or copy credentials into configuration. If needed,
-set `VOLT_MCP_WINDOWS_BUN` to the absolute path of Windows `bun.exe`.
+Prime can then call `await volt_mcp.roblox_status()` and the other advertised `roblox_*` methods.
+Set `VOLT_MCP_WINDOWS_BUN` only when `bun.exe` is not inherited on WSL's `PATH`.
 
-### First run
+</details>
 
-Setup writes autoexec for the next injected session. It cannot make an already-running injected
-session execute a new file, so **rejoin or reinject Roblox once** after first setup. If Volt exposes
-a console in the current session, this optional one-time bootstrap loads the same installed agent:
+<details>
+<summary><b>Use a custom Volt install</b></summary>
 
-```luau
-loadstring(readfile("volt-mcp/bootstrap.lua"), "Volt MCP bootstrap")()
-```
-
-## Pairing contract
-
-The Roblox agent connects only to `ws://127.0.0.1:32145/volt` and registers its session without
-opening a dialog. Pairing is deliberately two-phase so the MCP-side code is visible first:
-
-1. Call **`roblox_prepare_pairing`**. It immediately returns a structured challenge with
-   `challengeId`, six-digit `verificationCode`, `expiresAt`, the pending Roblox session, local
-   daemon identity and endpoint, granted scope, persistence, and `nextAction`. **No Windows dialog
-   exists yet.**
-2. Show that result to the user.
-3. Call **`roblox_present_pairing`** with the returned `challengeId`.
-4. Volt's documented, yielding Windows
-   [**Yes/No** messagebox](https://docs.voltbz.net/docs/miscellaneous/messagebox) opens with the same
-   code, session, daemon, scope, and persistence details.
-
-Choose **Yes only when the codes match**. Choose **No on any mismatch**.
-
-> [!IMPORTANT]
-> The six-digit code only correlates the pending MCP result with the pending Windows dialog. It is
-> not authorization and it is not a credential. Approval is exclusively the user's **Yes** action.
-
-Yes persists a long random credential locally for future Volt sessions. No, expiry, replacement,
-disconnect, an unavailable messagebox, or any unexpected result stores nothing and leaves pairing
-retryable.
-
-## Trust boundary
-
-- The Volt agent bridge is loopback-only at `ws://127.0.0.1:32145/volt`; the local MCP daemon listens
-  at `http://127.0.0.1:32146/mcp`.
-- Approval grants MCP clients authorized to that daemon the ability to inspect live scripts and
-  runtime state, and to execute or modify client-side Luau.
-- The daemon stores only a SHA-256 hash of the Roblox credential in
-  `%LOCALAPPDATA%\volt-mcp\state.json`.
-- The Roblox-side credential stays in Volt's workspace at `volt-mcp/credential.json`.
-- A separate local MCP-client credential lives in the daemon state file. The bundled stdio adapter
-  reads it directly; editors do not need a token environment variable.
-
-Reset persisted Roblox pairing with:
+Volt is discovered at `%LOCALAPPDATA%\Volt` by default:
 
 ```powershell
-bun.exe run scripts/setup.ts reset-pairing
+bun.exe run scripts/setup.ts install --volt-root C:\path\to\Volt
 ```
 
-After resetting, restart or reconnect the active Volt session so its saved workspace credential is
-rejected and removed. Resetting does not remove the separate local MCP-client credential.
-
-## Runtime status
-
-`roblox_status` is always the recovery surface:
-
-| State | Meaning |
-| --- | --- |
-| `unpaired` | No saved pairing and no unpaired Roblox session is registered. |
-| `ready_to_pair` | Roblox registered silently and is ready for challenge preparation. |
-| `challenge_ready` | MCP prepared a challenge; no Windows dialog has been shown. |
-| `awaiting_user_approval` | The matching Windows Yes/No dialog is waiting for a decision. |
-| `pairing_declined` | The user declined; nothing was stored and a retry is allowed. |
-| `pairing_expired` | The challenge expired; late results cannot authorize and a retry is allowed. |
-| `waiting_for_roblox` | Pairing is saved, but the Roblox agent is not currently connected. |
-| `connected` | The paired Roblox agent is online and tools can reach it. |
-
-The stdio adapter starts the installed daemon when needed and never waits for Roblox. Before setup,
-it initializes in a safe setup mode without placeholder Roblox tools; start a fresh Codex task after
-setup to load the live tool list.
-
-## Tools by intent
-
-### Connect and pair
-
-| Tool | Purpose |
-| --- | --- |
-| `roblox_status` | Read registration, pairing, waiting, and connection state. |
-| `roblox_prepare_pairing` | Create and return a challenge without displaying a dialog. |
-| `roblox_present_pairing` | Present the current challenge in Volt's Windows Yes/No messagebox. |
-
-### Discover and read
-
-| Tool | Purpose |
-| --- | --- |
-| `roblox_list_targets` | List the game state and active Actor/Lua-state selectors. |
-| `roblox_list_scripts` | List cached, running, or loaded client scripts. |
-| `roblox_search_scripts` | Search live paths plus source cached by explicit reads. Never decompiles in the background. |
-| `roblox_read_script` | **Explicit native operation:** decompile one canonical script path and return paged output. |
-
-### Inspect and change
-
-| Tool | Purpose |
-| --- | --- |
-| `roblox_inspect_closure` | Inspect stable closure identity, constants, upvalues, and prototypes. |
-| `roblox_mutate_closure` | **State-changing:** compare-and-set one primitive constant or upvalue. |
-| `roblox_restore_mutation` | **State-changing:** guarded restoration using a retained mutation ID. |
-| `roblox_eval` | **Destructive:** execute an explicit Luau chunk in the live client. |
-
-## How it works
-
-<details>
-<summary><strong>Targets and script visibility</strong></summary>
-
-Omitting `target` selects `{ "kind": "game" }`. Actor-aware calls can use
-`{ "kind": "actor", "path": "workspace[...]" }` or a state selector from
-`roblox_list_targets`. Actor/state eval uses Volt's Lua-state proxy and a private communication
-channel; script tools validate that the selected script belongs to the requested state.
-
-Scripts below another `Player` are excluded from listing, indexing, and search by default because
-their ordinary `PlayerScripts`, `PlayerGui`, and `Backpack` LocalScripts do not execute in the local
-client. Scripts reported by `getrunningscripts()` or `getloadedmodules()` remain included. Pass
-`includeOtherPlayers: true` when replicated containers matter. Direct read and inspection by
-canonical path remain unrestricted.
-
 </details>
 
-<details>
-<summary><strong>Indexing and search</strong></summary>
+## 🧠 How search works
 
-The script index is demand-driven. Listing or searching scans client-visible script metadata, while
-script-instance and Actor-state changes mark that inventory stale. Volt MCP does not call Volt's
-native decompiler on join, while idle, or during a search. `refresh: true` only forces a fresh
-metadata inventory scan.
+Volt MCP keeps a lightweight inventory of client-visible script metadata. Only
+`roblox_read_script` invokes Volt's native decompiler, one canonical path at a time. Explicitly read
+source enters an 8 MiB / 128-entry cache, where later searches can rank paths, literals, API clues,
+and behavior hints without surprise decompilation.
 
-`roblox_read_script` is the single explicit source-decompilation boundary: it decompiles the selected
-canonical path and places that source in an 8 MiB/128-entry resident cache. Later searches can rank
-and quote cached source. The `index` result reports `sourceMode: "explicit_read"` and
-`backgroundDecompile: false`.
+Decompiler output is approximate: literals, constants, calls, and hierarchy tend to survive;
+comments, local names, source locations, and reconstructed control flow may not. Obfuscation makes
+those signals weaker.
 
-Ranking combines canonical path matches, exact decompiled-text matches, source string literals,
-stable API/member-call clues, and a small behavior-to-API map. Results can include query expansion,
-line-numbered snippets, SHA-256 source and bytecode identities, extracted clues, and constants from
-the ten highest-ranked matches. Decompiled local and upvalue names are not treated as stable
-semantic signals.
-
-</details>
-
-<details>
-<summary><strong>Decompiler and mutation caveats</strong></summary>
-
-Decompiler output is an approximation, and the native decompiler runs inside Volt rather than a
-memory-safe Volt MCP process. It is invoked only when an MCP client explicitly requests
-`roblox_read_script` for one path, never as join-time or idle maintenance. Literal strings, numeric
-constants, API calls, and script hierarchy usually survive ordinary decompilation; comments,
-meaningful locals, some source locations, and reconstructed control flow may not. Obfuscation can
-further weaken search results.
-
-Inspection identifies a function by script bytecode hash, runtime closure ID, nested-prototype
-indices, and debug line. For a narrow reversible edit, inspect the script, choose a returned runtime
-closure, inspect that ID, then mutate it with both `expected` and `value`. Mutation accepts only
-booleans, finite numbers, and strings of the same live type. It verifies before and after writing,
-retains the original value, and returns a `mutationId` for guarded restoration.
-
-`roblox_eval` remains the intentionally broad, destructive escape hatch.
-
-</details>
-
-## Development
+## 🛠️ Development
 
 ```powershell
 bun run check
 ```
 
-- `bun run smoke` lists advertised tools and checks the attached client status.
+- `bun run smoke` checks advertised tools and client status.
 - `bun run evaluate:search` runs the connected-client retrieval benchmark.
 - `VOLT_MCP_ENDPOINT` selects a non-default daemon URL; authorization still comes from local state.
