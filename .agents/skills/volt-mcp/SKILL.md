@@ -1,14 +1,14 @@
 ---
 name: volt-mcp
-description: Use Volt MCP from Prime Agent to inspect, search, read, or modify the live Roblox client attached to Volt. Use whenever the user mentions their current Roblox game, live client scripts, Volt runtime state, Roblox decompilation, or asks Prime to call a roblox_* tool.
-compatibility: Windows with Volt and Windows Bun; Prime Agent may run in WSL.
+description: Use Volt MCP to inspect, search, read, or modify the live Roblox client attached to Volt. Use whenever the user mentions their current Roblox game, live client scripts, Volt runtime state, Roblox decompilation, or asks an agent to call a roblox_* tool.
+compatibility: Windows with Volt and Windows Bun; the calling agent may run in WSL.
 ---
 
-# Volt MCP for Prime Agent
+# Volt MCP
 
-Import the prepared `volt_mcp` Python module and keep Volt MCP on the Windows host. The module starts
+When the `volt_mcp` Python module is available, use it while keeping Volt MCP on the Windows host. It starts
 `scripts/mcp.ts` through `bun.exe`, so the adapter, daemon, state, and Volt share Windows loopback even
-when Prime runs in WSL.
+when the calling agent runs in WSL.
 
 1. Discover the current server surface with `await volt_mcp.list_tools()` when tool arguments are not
    already known.
