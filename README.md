@@ -40,7 +40,7 @@ No manual `config.toml` edit is required. In a new task, choose **Set up Volt MC
 run the same client-neutral setup directly:
 
 ```powershell
-bun run scripts/setup.ts install
+bun.exe run scripts/setup.ts install
 ```
 
 Setup installs or updates the stable runtime at `%LOCALAPPDATA%\volt-mcp\runtime`, creates
@@ -51,8 +51,60 @@ the local daemon. It is safe to rerun for updates or repair.
 Volt path discovery defaults to `%LOCALAPPDATA%\Volt`. For a custom location:
 
 ```powershell
-bun run scripts/setup.ts install --volt-root C:\path\to\Volt
+bun.exe run scripts/setup.ts install --volt-root C:\path\to\Volt
 ```
+
+### Agents running in WSL
+
+Keep the entire Volt MCP runtime on the Windows host. WSL and Windows have different loopback
+namespaces in common WSL2 configurations, so launching this project with Linux Bun can leave Volt
+unable to reach the bridge. Use **Windows Bun** (`bun.exe`) from WSL instead:
+
+```bash
+bun.exe run scripts/setup.ts install
+```
+
+The bundled MCP configuration already uses `bun.exe`. For a stdio MCP client that supports a `cwd`
+extension, set the clone as its working directory and keep the script argument relative:
+
+```json
+{
+  "command": "bun.exe",
+  "args": ["run", "./scripts/mcp.ts"],
+  "cwd": "/mnt/c/path/to/volt-mcp"
+}
+```
+
+If the client does not support `cwd`, pass the script as an absolute **Windows-form** argument:
+
+```json
+{
+  "command": "bun.exe",
+  "args": ["run", "C:\\path\\to\\volt-mcp\\scripts\\mcp.ts"]
+}
+```
+
+Keep the clone on a Windows-mounted path such as `/mnt/c/...` so `bun.exe` can access it. WSL does
+not translate `/mnt/c/...` strings passed as arguments to Windows executables, so use `wslpath -w`
+when generating the second form. If `bun.exe` is not inherited on WSL's `PATH`, use its absolute
+`/mnt/c/.../bun.exe` path as `command`. Do not substitute Linux Bun.
+
+#### Prime Agent
+
+This repository includes a Python-backed Prime skill at `.agents/skills/volt-mcp`. Prime discovers
+it automatically when started in this repository. To use it from other working directories, add the
+skill directory to `~/.prime/agent/settings.json` and reload Prime:
+
+```json
+{
+  "skills": ["/mnt/c/path/to/volt-mcp/.agents/skills"]
+}
+```
+
+Then Prime can use `await volt_mcp.list_tools()`, `await volt_mcp.roblox_status()`, and the other
+advertised `roblox_*` methods. The skill talks to the bundled stdio adapter through `bun.exe`; it
+does not expose either loopback listener to WSL or copy credentials into configuration. If needed,
+set `VOLT_MCP_WINDOWS_BUN` to the absolute path of Windows `bun.exe`.
 
 ### First run
 
@@ -104,7 +156,7 @@ retryable.
 Reset persisted Roblox pairing with:
 
 ```powershell
-bun run scripts/setup.ts reset-pairing
+bun.exe run scripts/setup.ts reset-pairing
 ```
 
 After resetting, restart or reconnect the active Volt session so its saved workspace credential is
