@@ -6,6 +6,24 @@ export class BridgeUnavailableError extends Error {
   }
 }
 
+export class BridgeClientSelectionError extends Error {
+  readonly name = "BridgeClientSelectionError"
+
+  constructor() {
+    super(
+      "Multiple authenticated Volt clients are connected; pass a client returned by roblox_list_clients",
+    )
+  }
+}
+
+export class BridgeClientNotFoundError extends Error {
+  readonly name = "BridgeClientNotFoundError"
+
+  constructor(readonly client: string) {
+    super(`Volt client ${client} is not connected; call roblox_list_clients for current clients`)
+  }
+}
+
 export class BridgeTimeoutError extends Error {
   readonly name = "BridgeTimeoutError"
 

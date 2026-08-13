@@ -70,13 +70,18 @@ bun.exe run scripts/setup.ts reset-pairing
 
 | Intent | Tools |
 | --- | --- |
-| **Connect** | `roblox_status`, `roblox_prepare_pairing`, `roblox_present_pairing` |
+| **Connect** | `roblox_status`, `roblox_list_clients`, `roblox_prepare_pairing`, `roblox_present_pairing` |
 | **Discover** | `roblox_list_targets`, `roblox_list_scripts`, `roblox_search_scripts` |
 | **Read** | `roblox_read_script`, `roblox_inspect_closure` |
 | **Change** | `roblox_mutate_closure`, `roblox_restore_mutation`, `roblox_eval` |
 
 `roblox_status` is always the recovery surface. It tells the agent whether Roblox is ready to pair,
 waiting for approval, disconnected, or fully connected.
+
+When several paired Volt clients are live, `roblox_list_clients` returns a daemon-issued `client`
+UUID with each Roblox job and player. Pass that UUID to the other runtime tools. The selector is
+optional while exactly one client is connected and required when two or more are connected; `target`
+continues to select the game, Actor, or Lua state inside that client.
 
 ## 🛡️ Safety by design
 

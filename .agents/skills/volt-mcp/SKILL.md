@@ -13,6 +13,8 @@ when the calling agent runs in WSL.
 1. Discover the current server surface with `await volt_mcp.list_tools()` when tool arguments are not
    already known.
 2. Start with `await volt_mcp.roblox_status()` when the user refers to the current game or live client.
+   If several clients are connected, call `await volt_mcp.roblox_list_clients()` and pass the selected
+   `client` UUID to each runtime tool. `target` selects a Lua state within that client.
 3. Call named helpers such as `await volt_mcp.roblox_search_scripts(query="...")`, or use
    `await volt_mcp.run("roblox_tool_name", {"argument": "value"})`.
 4. Preserve the pairing sequence: prepare, show the complete challenge to the user, then present the
