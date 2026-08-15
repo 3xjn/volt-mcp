@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { LiveBridge } from "./bridge.js"
 import {
+  clientInput,
   evalInput,
   inspectClosureInput,
   listScriptsInput,
@@ -44,6 +45,25 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
   )
 
   server.registerTool(
+    "roblox_list_clients",
+    {
+      title: "List connected Roblox clients",
+      description:
+        "List authenticated Volt client sessions and their Roblox job/player metadata. Pass a returned client ID to other Roblox tools when several clients are connected.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async () => {
+      const clients = bridge.listClients()
+      return textResult({
+        clients,
+        count: clients.length,
+        selectionRequired: clients.length > 1,
+      })
+    },
+  )
+
+  server.registerTool(
     "roblox_prepare_pairing",
     {
       title: "Prepare Roblox pairing",
@@ -74,10 +94,10 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "List Roblox Lua-state targets",
       description: "List the default game Lua state plus active Actor and LuaStateProxy selectors.",
-      inputSchema: {},
+      inputSchema: { client: clientInput },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
-    async () => textResult(await bridge.request("listTargets", {})),
+    async ({ client }) => textResult(await bridge.request("listTargets", {}, undefined, client)),
   )
 
   server.registerTool(
@@ -91,13 +111,18 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     },
     async (input) =>
       textResult(
-        await bridge.request("listScripts", {
-          query: input.query ?? "",
-          scope: input.scope,
-          limit: input.limit,
-          target: input.target,
-          includeOtherPlayers: input.includeOtherPlayers,
-        }),
+        await bridge.request(
+          "listScripts",
+          {
+            query: input.query ?? "",
+            scope: input.scope,
+            limit: input.limit,
+            target: input.target,
+            includeOtherPlayers: input.includeOtherPlayers,
+          },
+          undefined,
+          input.client,
+        ),
       ),
   )
 
@@ -125,6 +150,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
             includeOtherPlayers: input.includeOtherPlayers,
           },
           120_000,
+          input.client,
         ),
       ),
   )
@@ -149,6 +175,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
             target: input.target,
           },
           120_000,
+          input.client,
         ),
       ),
   )
@@ -164,12 +191,17 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     },
     async (input) =>
       textResult(
-        await bridge.request("inspectClosure", {
-          path: input.path,
-          target: input.target,
-          prototypePath: input.prototypePath,
-          ...(input.closureId === undefined ? {} : { closureId: input.closureId }),
-        }),
+        await bridge.request(
+          "inspectClosure",
+          {
+            path: input.path,
+            target: input.target,
+            prototypePath: input.prototypePath,
+            ...(input.closureId === undefined ? {} : { closureId: input.closureId }),
+          },
+          undefined,
+          input.client,
+        ),
       ),
   )
 
@@ -188,16 +220,21 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     },
     async (input) =>
       textResult(
-        await bridge.request("mutateClosure", {
-          path: input.path,
-          closureId: input.closureId,
-          target: input.target,
-          prototypePath: input.prototypePath,
-          kind: input.kind,
-          index: input.index,
-          expected: input.expected,
-          value: input.value,
-        }),
+        await bridge.request(
+          "mutateClosure",
+          {
+            path: input.path,
+            closureId: input.closureId,
+            target: input.target,
+            prototypePath: input.prototypePath,
+            kind: input.kind,
+            index: input.index,
+            expected: input.expected,
+            value: input.value,
+          },
+          undefined,
+          input.client,
+        ),
       ),
   )
 
@@ -216,10 +253,15 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     },
     async (input) =>
       textResult(
-        await bridge.request("restoreMutation", {
-          mutationId: input.mutationId,
-          target: input.target,
-        }),
+        await bridge.request(
+          "restoreMutation",
+          {
+            mutationId: input.mutationId,
+            target: input.target,
+          },
+          undefined,
+          input.client,
+        ),
       ),
   )
 
@@ -243,6 +285,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
           "eval",
           { code: input.code, chunkName: input.chunkName, target: input.target },
           120_000,
+          input.client,
         ),
       ),
   )

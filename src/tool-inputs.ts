@@ -2,6 +2,11 @@ import { z } from "zod"
 
 const instancePath = z.string().min(1).max(4_096).describe("Canonical game/workspace instance path")
 
+export const clientInput = z
+  .uuid()
+  .optional()
+  .describe("Connected Volt client ID returned by roblox_list_clients; required when several exist")
+
 export const scriptScopeInput = z
   .enum(["all", "running", "loaded", "cached"])
   .default("all")
@@ -22,6 +27,7 @@ export const targetInput = z
   .default({ kind: "game" })
 
 export const listScriptsInput = z.object({
+  client: clientInput,
   query: z.string().max(200).optional().describe("Case-insensitive path/name filter"),
   scope: scriptScopeInput,
   limit: z.number().int().min(1).max(1_000).default(200),
@@ -33,6 +39,7 @@ export const listScriptsInput = z.object({
 })
 
 export const searchScriptsInput = z.object({
+  client: clientInput,
   query: z.string().min(1).max(200).describe("Words or source text to find"),
   scope: scriptScopeInput,
   limit: z.number().int().min(1).max(100).default(20),
@@ -47,6 +54,7 @@ export const searchScriptsInput = z.object({
 })
 
 export const readScriptInput = z.object({
+  client: clientInput,
   path: instancePath,
   startLine: z.number().int().min(1).default(1),
   lineCount: z.number().int().min(1).max(5_000).default(1_000),
@@ -54,6 +62,7 @@ export const readScriptInput = z.object({
 })
 
 export const inspectClosureInput = z.object({
+  client: clientInput,
   path: instancePath,
   closureId: z
     .string()
@@ -72,6 +81,7 @@ export const inspectClosureInput = z.object({
 const primitiveValueInput = z.union([z.string().max(10_000), z.number().finite(), z.boolean()])
 
 export const mutateClosureInput = z.object({
+  client: clientInput,
   path: instancePath,
   closureId: z
     .string()
@@ -87,11 +97,13 @@ export const mutateClosureInput = z.object({
 })
 
 export const restoreMutationInput = z.object({
+  client: clientInput,
   mutationId: z.string().min(1).max(128),
   target: targetInput,
 })
 
 export const evalInput = z.object({
+  client: clientInput,
   code: z.string().min(1).max(100_000).describe("Luau chunk to execute in the Volt environment"),
   chunkName: z.string().min(1).max(100).default("Volt MCP"),
   target: targetInput,

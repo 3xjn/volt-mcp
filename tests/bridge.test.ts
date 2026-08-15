@@ -3,7 +3,13 @@ import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type LiveBridge, startBridge } from "../src/bridge.js"
-import { BridgeTimeoutError, BridgeUnavailableError } from "../src/errors.js"
+import {
+  BridgeClientNotFoundError,
+  BridgeClientSelectionError,
+  BridgeDisconnectedError,
+  BridgeTimeoutError,
+  BridgeUnavailableError,
+} from "../src/errors.js"
 import { type AgentInfo, requestMessageSchema, responseMessageSchema } from "../src/protocol.js"
 import { type LocalDaemonState, loadDaemonState } from "../src/state.js"
 
@@ -16,9 +22,15 @@ const AGENT: AgentInfo = {
   playerName: "Builder",
   userId: 456,
 }
+const SECOND_AGENT: AgentInfo = {
+  ...AGENT,
+  playerName: "SecondBuilder",
+  userId: 789,
+}
 
 let bridge: LiveBridge | undefined
 let socket: WebSocket | undefined
+let secondarySocket: WebSocket | undefined
 let state: LocalDaemonState | undefined
 let temporaryDirectory: string | undefined
 
@@ -87,6 +99,22 @@ async function registerAgent(client: WebSocket): Promise<void> {
   throw new TestHarnessError("Agent registration did not become visible")
 }
 
+async function authenticateAgent(client: WebSocket, agent: AgentInfo): Promise<void> {
+  const ready = waitForMessage(client)
+  client.send(JSON.stringify({ type: "hello", token: AGENT_TOKEN, agent }))
+  expect(await ready).toEqual({ type: "ready" })
+}
+
+async function waitForClientCount(expected: number): Promise<void> {
+  for (let attempts = 0; attempts < 40; attempts += 1) {
+    if (bridge?.listClients().length === expected) {
+      return
+    }
+    await Bun.sleep(5)
+  }
+  throw new TestHarnessError(`Connected client count did not become ${expected}`)
+}
+
 async function expectNoMessage(client: WebSocket, durationMs = 20): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const onMessage = () => {
@@ -105,10 +133,12 @@ async function expectNoMessage(client: WebSocket, durationMs = 20): Promise<void
 afterEach(async () => {
   await bridge?.stop()
   socket?.close()
+  secondarySocket?.close()
   if (temporaryDirectory !== undefined) {
     await rm(temporaryDirectory, { recursive: true, force: true })
   }
   socket = undefined
+  secondarySocket = undefined
   bridge = undefined
   state = undefined
   temporaryDirectory = undefined
@@ -240,6 +270,73 @@ describe("live bridge", () => {
 
     // When it does not answer a request, then the request times out
     await expect(bridge.request("status", {}, 10)).rejects.toBeInstanceOf(BridgeTimeoutError)
+  })
+
+  test("keeps same-job clients connected and scopes routing and cleanup by client", async () => {
+    // Given two paired Volt clients are connected to the same Roblox job
+    const daemonState = await createState()
+    await daemonState.pairAgent(AGENT_TOKEN)
+    bridge = startBridge({ state: daemonState, port: 0 })
+    socket = await openAgent()
+    await authenticateAgent(socket, AGENT)
+    secondarySocket = await openAgent()
+    await authenticateAgent(secondarySocket, SECOND_AGENT)
+
+    const clients = bridge.listClients()
+    const firstClient = clients.find(({ agent }) => agent.userId === AGENT.userId)
+    const secondClient = clients.find(({ agent }) => agent.userId === SECOND_AGENT.userId)
+    if (firstClient === undefined || secondClient === undefined) {
+      throw new TestHarnessError("Expected both connected clients")
+    }
+
+    // Then each socket remains live and receives a stable, distinct daemon-issued ID
+    expect(socket.readyState).toBe(WebSocket.OPEN)
+    expect(secondarySocket.readyState).toBe(WebSocket.OPEN)
+    expect(firstClient.client).not.toBe(secondClient.client)
+    expect(bridge.listClients()).toEqual(clients)
+    expect(bridge.status()).toEqual({
+      state: "connected",
+      paired: true,
+      connected: true,
+      clients,
+    })
+    await expect(bridge.request("status", {})).rejects.toBeInstanceOf(BridgeClientSelectionError)
+    await expect(
+      bridge.request("status", {}, undefined, crypto.randomUUID()),
+    ).rejects.toBeInstanceOf(BridgeClientNotFoundError)
+
+    // When requests are addressed explicitly, each reaches only its selected socket
+    const firstRequestReceived = waitForMessage(socket)
+    const firstPending = bridge.request("status", { marker: "first" }, 5_000, firstClient.client)
+    const firstOutcome = firstPending.then(
+      () => new TestHarnessError("Disconnected request unexpectedly resolved"),
+      (error: unknown) => error,
+    )
+    const firstRequest = requestMessageSchema.parse(await firstRequestReceived)
+    expect(firstRequest.params).toEqual({ marker: "first" })
+    await expectNoMessage(secondarySocket)
+
+    const secondRequestReceived = waitForMessage(secondarySocket)
+    const secondPending = bridge.request("status", { marker: "second" }, 5_000, secondClient.client)
+    const secondRequest = requestMessageSchema.parse(await secondRequestReceived)
+    expect(secondRequest.params).toEqual({ marker: "second" })
+
+    // And invalidating one client rejects only its own request through the disconnect path
+    socket.send(JSON.stringify({ type: "invalid" }))
+    await waitForClientCount(1)
+    expect(await firstOutcome).toBeInstanceOf(BridgeDisconnectedError)
+
+    secondarySocket.send(
+      JSON.stringify({
+        type: "response",
+        id: secondRequest.id,
+        ok: true,
+        result: { client: "second" },
+      }),
+    )
+    await expect(secondPending).resolves.toEqual({ client: "second" })
+    expect(secondarySocket.readyState).toBe(WebSocket.OPEN)
+    expect(bridge.listClients()).toEqual([secondClient])
   })
 
   test("denies pairing without persisting a credential", async () => {

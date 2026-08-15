@@ -1,6 +1,8 @@
 import type { ServerWebSocket } from "bun"
 import {
   AgentRequestError,
+  BridgeClientNotFoundError,
+  BridgeClientSelectionError,
   BridgeDisconnectedError,
   BridgeStartupError,
   BridgeTimeoutError,
@@ -22,6 +24,18 @@ type PendingRequest = {
   readonly resolve: (value: unknown) => void
   readonly reject: (reason: Error) => void
   readonly timeout: ReturnType<typeof setTimeout>
+}
+
+export type ConnectedClient = {
+  readonly client: string
+  readonly connectedAt: string
+  readonly agent: AgentInfo
+}
+
+type ClientConnection = {
+  readonly details: ConnectedClient
+  readonly socket: ServerWebSocket<PairingSocketData>
+  readonly pending: Map<string, PendingRequest>
 }
 
 export type BridgeStatus =
@@ -55,6 +69,12 @@ export type BridgeStatus =
       readonly paired: true
       readonly connected: true
       readonly agent: AgentInfo
+    }
+  | {
+      readonly state: "connected"
+      readonly paired: true
+      readonly connected: true
+      readonly clients: readonly ConnectedClient[]
     }
 
 export type PairingChallengeView = {
@@ -99,10 +119,12 @@ export type PairingPresentationResult =
 
 export interface LiveBridge {
   readonly port: number
+  listClients(): readonly ConnectedClient[]
   request(
     method: RequestMethod,
     params: Readonly<Record<string, unknown>>,
     timeoutMs?: number,
+    client?: string,
   ): Promise<unknown>
   status(): BridgeStatus
   preparePairing(): BridgeStatus
@@ -132,26 +154,42 @@ function parseJson(source: string): unknown {
 
 export function startBridge(options: BridgeOptions): LiveBridge {
   const defaultTimeoutMs = options.requestTimeoutMs ?? 30_000
-  const pending = new Map<string, PendingRequest>()
   const pairing = createPairingController(options)
-  let activeSocket: ServerWebSocket<PairingSocketData> | undefined
-  let activeAgent: AgentInfo | undefined
+  const clientsById = new Map<string, ClientConnection>()
+  const clientsBySocket = new Map<ServerWebSocket<PairingSocketData>, ClientConnection>()
 
-  function rejectPending(error: Error): void {
-    for (const request of pending.values()) {
+  function rejectPending(connection: ClientConnection, error: Error): void {
+    for (const request of connection.pending.values()) {
       clearTimeout(request.timeout)
       request.reject(error)
     }
-    pending.clear()
+    connection.pending.clear()
+  }
+
+  function disconnectClient(
+    socket: ServerWebSocket<PairingSocketData>,
+    error = new BridgeDisconnectedError(),
+  ): void {
+    const connection = clientsBySocket.get(socket)
+    if (connection === undefined) {
+      return
+    }
+    clientsBySocket.delete(socket)
+    clientsById.delete(connection.details.client)
+    rejectPending(connection, error)
   }
 
   function authenticate(socket: ServerWebSocket<PairingSocketData>, agent: AgentInfo): void {
-    if (activeSocket !== undefined && activeSocket !== socket) {
-      activeSocket.close(1012, "Replaced by a newer Volt client")
-      rejectPending(new BridgeDisconnectedError())
+    if (!clientsBySocket.has(socket)) {
+      const details: ConnectedClient = {
+        client: crypto.randomUUID(),
+        connectedAt: new Date().toISOString(),
+        agent,
+      }
+      const connection: ClientConnection = { details, socket, pending: new Map() }
+      clientsById.set(details.client, connection)
+      clientsBySocket.set(socket, connection)
     }
-    activeSocket = socket
-    activeAgent = agent
     socket.send(JSON.stringify({ type: "ready" }))
   }
 
@@ -173,6 +211,7 @@ export function startBridge(options: BridgeOptions): LiveBridge {
       open: pairing.open,
       async message(socket, message) {
         if (typeof message !== "string") {
+          disconnectClient(socket)
           socket.close(1003, "Text frames only")
           return
         }
@@ -183,15 +222,21 @@ export function startBridge(options: BridgeOptions): LiveBridge {
         }
         const response = responseMessageSchema.safeParse(raw)
         if (!response.success) {
+          disconnectClient(socket)
           socket.close(1007, "Invalid response")
           return
         }
-        const request = pending.get(response.data.id)
+        const connection = clientsBySocket.get(socket)
+        if (connection === undefined) {
+          socket.close(1008, "Client session unavailable")
+          return
+        }
+        const request = connection.pending.get(response.data.id)
         if (request === undefined) {
           return
         }
         clearTimeout(request.timeout)
-        pending.delete(response.data.id)
+        connection.pending.delete(response.data.id)
         if (response.data.ok) {
           request.resolve(response.data.result)
         } else {
@@ -200,11 +245,7 @@ export function startBridge(options: BridgeOptions): LiveBridge {
       },
       close(socket) {
         pairing.close(socket)
-        if (activeSocket === socket) {
-          activeSocket = undefined
-          activeAgent = undefined
-          rejectPending(new BridgeDisconnectedError())
-        }
+        disconnectClient(socket)
       },
     },
   })
@@ -248,9 +289,37 @@ export function startBridge(options: BridgeOptions): LiveBridge {
     }
   }
 
+  function listClients(): readonly ConnectedClient[] {
+    return Array.from(clientsById.values(), ({ details }) => details)
+  }
+
+  function selectClient(client?: string): ClientConnection {
+    if (client !== undefined) {
+      const selected = clientsById.get(client)
+      if (selected === undefined) {
+        throw new BridgeClientNotFoundError(client)
+      }
+      return selected
+    }
+    const clients = Array.from(clientsById.values())
+    const selected = clients[0]
+    if (selected === undefined) {
+      throw new BridgeUnavailableError()
+    }
+    if (clients.length > 1) {
+      throw new BridgeClientSelectionError()
+    }
+    return selected
+  }
+
   function status(): BridgeStatus {
-    if (activeAgent !== undefined) {
-      return { state: "connected", paired: true, connected: true, agent: activeAgent }
+    const clients = listClients()
+    const onlyClient = clients[0]
+    if (onlyClient !== undefined && clients.length === 1) {
+      return { state: "connected", paired: true, connected: true, agent: onlyClient.agent }
+    }
+    if (clients.length > 1) {
+      return { state: "connected", paired: true, connected: true, clients }
     }
     if (options.state.hasAgentCredential()) {
       return { state: "waiting_for_roblox", paired: true, connected: false }
@@ -288,6 +357,7 @@ export function startBridge(options: BridgeOptions): LiveBridge {
 
   return {
     port: boundPort,
+    listClients,
     status,
     preparePairing() {
       pairing.prepare()
@@ -310,28 +380,27 @@ export function startBridge(options: BridgeOptions): LiveBridge {
         challenge: presentedStatus.challenge,
       }
     },
-    async request(method, params, timeoutMs = defaultTimeoutMs) {
-      const socket = activeSocket
-      if (socket === undefined) {
-        throw new BridgeUnavailableError()
-      }
+    async request(method, params, timeoutMs = defaultTimeoutMs, client) {
+      const connection = selectClient(client)
       const id = crypto.randomUUID()
       const request: AgentRequest = { type: "request", id, method, params }
       return await new Promise<unknown>((resolve, reject) => {
         const timeout = setTimeout(() => {
-          pending.delete(id)
+          connection.pending.delete(id)
           reject(new BridgeTimeoutError(id, timeoutMs))
         }, timeoutMs)
-        pending.set(id, { resolve, reject, timeout })
-        socket.send(JSON.stringify(request))
+        connection.pending.set(id, { resolve, reject, timeout })
+        connection.socket.send(JSON.stringify(request))
       })
     },
     async stop() {
-      rejectPending(new BridgeDisconnectedError())
+      for (const connection of clientsById.values()) {
+        rejectPending(connection, new BridgeDisconnectedError())
+      }
       pairing.stop()
       await Promise.race([server.stop(true), Bun.sleep(STOP_GRACE_MS)])
-      activeSocket = undefined
-      activeAgent = undefined
+      clientsById.clear()
+      clientsBySocket.clear()
     },
   }
 }

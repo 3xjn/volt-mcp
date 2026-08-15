@@ -9,6 +9,7 @@ import { createMcpServer } from "../src/tools.js"
 type CapturedRequest = {
   readonly method: RequestMethod
   readonly params: Readonly<Record<string, unknown>>
+  readonly client?: string
 }
 
 const requests: CapturedRequest[] = []
@@ -16,8 +17,11 @@ const openClients: Client[] = []
 
 const bridge: LiveBridge = {
   port: 0,
-  async request(method, params) {
-    requests.push({ method, params })
+  listClients() {
+    return []
+  },
+  async request(method, params, _timeoutMs, client) {
+    requests.push({ method, params, ...(client === undefined ? {} : { client }) })
     return { accepted: true }
   },
   status() {
@@ -242,6 +246,28 @@ test("adds an explicit default game target to existing runtime tools", async () 
         chunkName: "target contract",
         target: { kind: "game" },
       },
+    },
+  ])
+})
+
+test("routes a client selector separately from the Lua-state target", async () => {
+  // Given two independent selectors identify the Roblox client and its Lua state
+  const client = await openClient()
+  const clientId = "123e4567-e89b-42d3-a456-426614174000"
+  const target = { kind: "actor", path: 'workspace["Actors"]["Camera"]' } as const
+
+  // When
+  await client.callTool({
+    name: "roblox_eval",
+    arguments: { code: "return true", client: clientId, target },
+  })
+
+  // Then the client ID addresses the bridge and never enters the Luau request params
+  expect(requests).toEqual([
+    {
+      method: "eval",
+      client: clientId,
+      params: { code: "return true", chunkName: "Volt MCP", target },
     },
   ])
 })
