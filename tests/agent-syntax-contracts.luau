@@ -50,4 +50,13 @@ assert(readSource:find("getIndexedSource(entry, true)", 1, true))
 local _, nativeDecompileCalls = source:gsub("pcall%(decompile", "")
 assert(nativeDecompileCalls == 1)
 
+-- Closure inspection must never serialize unbounded runtime tables into a
+-- websocket frame. Compact previews preserve positional metadata, and the
+-- response guard prevents any oversized result from dropping the client.
+assert(source:find("local MAX_AGENT_RESULT_BYTES = 1536 * 1024", 1, true))
+assert(source:find("local function serializeClosureValue(value, depth)", 1, true))
+assert(source:find("value = serializeClosureValue(value, 1)", 1, true))
+assert(source:find("#encodedValue > MAX_AGENT_RESULT_BYTES", 1, true))
+assert(source:find("Response exceeded the safe %d-byte limit", 1, true))
+
 print("volt-mcp-agent-syntax-contracts-ok")

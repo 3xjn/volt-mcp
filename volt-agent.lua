@@ -6,6 +6,11 @@ local configuration = environment.VoltMcp or {}
 local endpoint = configuration.Url or "ws://127.0.0.1:32145/volt"
 local token
 
+local MAX_AGENT_RESULT_BYTES = 1536 * 1024
+local MAX_CLOSURE_STRING_BYTES = 512
+local MAX_CLOSURE_TABLE_ENTRIES = 16
+local MAX_CLOSURE_PREVIEW_DEPTH = 1
+
 assert(type(endpoint) == "string", "VoltMcp.Url must be a string")
 
 local credentialRead, credentialSource = pcall(readfile, "volt-mcp/credential.json")
@@ -212,6 +217,52 @@ local function serialize(value, depth, seen)
         })
     end
     seen[value] = nil
+    return { type = "table", entries = entries, truncated = truncated }
+end
+
+local function serializeClosureValue(value, depth)
+    local valueType = typeof(value)
+    if value == nil then
+        return { type = "nil" }
+    end
+    if valueType == "boolean" or valueType == "number" then
+        return serialize(value, 0, {})
+    end
+    if valueType == "string" then
+        if #value <= MAX_CLOSURE_STRING_BYTES then
+            return value
+        end
+        return {
+            type = "string",
+            value = value:sub(1, MAX_CLOSURE_STRING_BYTES),
+            length = #value,
+            truncated = true,
+        }
+    end
+    if valueType == "Instance" then
+        return serialize(value, 0, {})
+    end
+    if valueType ~= "table" then
+        return { type = valueType, value = tostring(value) }
+    end
+    if depth >= MAX_CLOSURE_PREVIEW_DEPTH then
+        return { type = "table", truncated = true, reason = "preview_depth" }
+    end
+
+    local entries = {}
+    local count = 0
+    local truncated = false
+    for key, child in next, value do
+        count += 1
+        if count > MAX_CLOSURE_TABLE_ENTRIES then
+            truncated = true
+            break
+        end
+        table.insert(entries, {
+            key = serializeClosureValue(key, depth + 1),
+            value = serializeClosureValue(child, depth + 1),
+        })
+    end
     return { type = "table", entries = entries, truncated = truncated }
 end
 
@@ -900,7 +951,11 @@ local function summarizeRuntimeClosure(closure)
         for index = 1, math.min(#constants, 12) do
             local valueSucceeded, value = pcall(debug.getconstant, closure, index)
             if valueSucceeded and isPrimitive(value) then
-                table.insert(constantPreview, { index = index, kind = type(value), value = value })
+                table.insert(constantPreview, {
+                    index = index,
+                    kind = type(value),
+                    value = serializeClosureValue(value, 0),
+                })
             end
         end
     end
@@ -913,7 +968,7 @@ local function summarizeRuntimeClosure(closure)
             table.insert(upvaluePreview, {
                 index = index,
                 kind = type(value),
-                value = serialize(value, 0, {}),
+                value = serializeClosureValue(value, 1),
             })
         end
     end
@@ -1015,7 +1070,7 @@ local function previewPrimitiveConstants(subject, limit)
                 table.insert(preview, {
                     index = index,
                     kind = type(value),
-                    value = value,
+                    value = serializeClosureValue(value, 0),
                 })
             end
         end
@@ -1398,7 +1453,7 @@ function handlers.inspectClosure(params)
             table.insert(constants, {
                 index = index,
                 kind = type(value),
-                value = serialize(value, 0, {}),
+                value = serializeClosureValue(value, 0),
             })
         end
     end
@@ -1413,7 +1468,7 @@ function handlers.inspectClosure(params)
             table.insert(upvalues, {
                 index = index,
                 kind = type(value),
-                value = serialize(value, 0, {}),
+                value = serializeClosureValue(value, 0),
             })
         end
         end
@@ -1833,9 +1888,19 @@ end
 
 local function respond(id, succeeded, value)
     if succeeded then
-        local encoded, encodeError = pcall(HttpService.JSONEncode, HttpService, value)
+        local encoded, encodedValue = pcall(HttpService.JSONEncode, HttpService, value)
         if not encoded then
-            send({ type = "response", id = id, ok = false, error = tostring(encodeError) })
+            send({ type = "response", id = id, ok = false, error = tostring(encodedValue) })
+            return
+        end
+        if #encodedValue > MAX_AGENT_RESULT_BYTES then
+            send({
+                type = "response",
+                id = id,
+                ok = false,
+                error = ("Response exceeded the safe %d-byte limit (%d bytes); narrow the request")
+                    :format(MAX_AGENT_RESULT_BYTES, #encodedValue),
+            })
             return
         end
         send({ type = "response", id = id, ok = true, result = value })

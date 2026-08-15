@@ -172,6 +172,31 @@ test("forwards a Lua-state target when inspecting a discovered runtime closure",
   ])
 })
 
+test("bounds closure previews before sending an agent response", () => {
+  // Given closure upvalues can contain multi-megabyte runtime tables
+  const agentSource = readFileSync(new URL("../volt-agent.lua", import.meta.url), "utf8")
+
+  // When the agent builds summaries, selected details, and the websocket response
+  const summaryStart = agentSource.indexOf("local function summarizeRuntimeClosure(")
+  const summaryEnd = agentSource.indexOf("\nlocal function collectBytecodeConstants(", summaryStart)
+  const summarySource = agentSource.slice(summaryStart, summaryEnd)
+  const inspectStart = agentSource.indexOf("function handlers.inspectClosure(params)")
+  const inspectEnd = agentSource.indexOf("\nfunction handlers.mutateClosure(params)", inspectStart)
+  const inspectSource = agentSource.slice(inspectStart, inspectEnd)
+  const respondStart = agentSource.indexOf("local function respond(id, succeeded, value)")
+  const respondEnd = agentSource.indexOf("\nlocal function handleMessage(", respondStart)
+  const respondSource = agentSource.slice(respondStart, respondEnd)
+
+  // Then previews stay shallow and every successful result is size-checked before socket send
+  expect(agentSource).toContain("local MAX_AGENT_RESULT_BYTES = 1536 * 1024")
+  expect(agentSource).toContain("local function serializeClosureValue(value, depth)")
+  expect(summarySource).toContain("value = serializeClosureValue(value, 1)")
+  expect(inspectSource).toContain("value = serializeClosureValue(value, 0)")
+  expect(inspectSource).not.toContain("value = serialize(value, 0, {})")
+  expect(respondSource).toContain("#encodedValue > MAX_AGENT_RESULT_BYTES")
+  expect(respondSource).toContain("Response exceeded the safe %d-byte limit")
+})
+
 test("uses compare-before-set inputs for a reversible primitive mutation", async () => {
   // Given
   const client = await openClient()
