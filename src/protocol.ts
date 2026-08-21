@@ -8,7 +8,7 @@ export const agentInfoSchema = z.object({
   jobId: z.string().max(128),
   playerName: z.string().max(64),
   userId: z.number().int().nonnegative(),
-  transport: z.enum(["websocket", "http"]).optional(),
+  transport: z.enum(["websocket", "http", "file"]).optional(),
   executor: z
     .object({
       name: z.string().max(64).optional(),

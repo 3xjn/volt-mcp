@@ -1,4 +1,6 @@
 import { timingSafeEqual } from "node:crypto"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { join } from "node:path"
 import type { ServerWebSocket } from "bun"
 import {
   AgentRequestError,
@@ -22,6 +24,7 @@ const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
 const STOP_GRACE_MS = 100
 const POLL_WAIT_MS = 2_000
 const HTTP_IDLE_MS = 15_000
+const FILE_POLL_MS = 100
 export const BRIDGE_PATH = "/live"
 export const POLL_PATH = "/live/poll"
 
@@ -43,6 +46,7 @@ type PollWaiter = {
 type ActiveSession =
   | { kind: "websocket"; socket: ServerWebSocket<SocketData>; agent: AgentInfo }
   | { kind: "http"; agent: AgentInfo; lastSeen: number }
+  | { kind: "file"; agent: AgentInfo; lastSeen: number }
 
 export type BridgeStatus = {
   readonly connected: boolean
@@ -64,6 +68,7 @@ export type BridgeOptions = {
   readonly token: string
   readonly port: number
   readonly requestTimeoutMs?: number
+  readonly filePollDir?: string
 }
 
 function tokenMatches(actual: string, expected: string): boolean {
@@ -94,6 +99,8 @@ export function startBridge(options: BridgeOptions): LiveBridge {
   const outbound: AgentRequest[] = []
   const waiters: PollWaiter[] = []
   let session: ActiveSession | undefined
+  let lastFilePayload = ""
+  let fileTimer: ReturnType<typeof setInterval> | undefined
 
   function rejectPending(error: Error): void {
     for (const request of pending.values()) {
@@ -120,8 +127,8 @@ export function startBridge(options: BridgeOptions): LiveBridge {
     }
   }
 
-  function httpSessionAlive(): boolean {
-    return session?.kind === "http" && Date.now() - session.lastSeen <= HTTP_IDLE_MS
+  function pollSessionAlive(kind: "http" | "file"): boolean {
+    return session?.kind === kind && Date.now() - session.lastSeen <= HTTP_IDLE_MS
   }
 
   function deliverHttp(request: AgentRequest): void {
@@ -175,6 +182,15 @@ export function startBridge(options: BridgeOptions): LiveBridge {
     return true
   }
 
+  async function writeAgentFile(body: unknown): Promise<void> {
+    const directory = options.filePollDir
+    if (directory === undefined) {
+      return
+    }
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, "to-agent.json"), `${JSON.stringify(body)}\n`, "utf8")
+  }
+
   async function handlePoll(request: Request): Promise<Response> {
     let raw: unknown
     try {
@@ -199,7 +215,7 @@ export function startBridge(options: BridgeOptions): LiveBridge {
 
     const poll = pollMessageSchema.safeParse(raw)
     if (poll.success) {
-      if (!tokenMatches(poll.data.token, options.token) || !httpSessionAlive()) {
+      if (!tokenMatches(poll.data.token, options.token) || !pollSessionAlive("http")) {
         return jsonResponse(401, { type: "error", error: "Authentication failed" })
       }
       if (session?.kind === "http") {
@@ -211,7 +227,7 @@ export function startBridge(options: BridgeOptions): LiveBridge {
 
     const response = parseHttpAgentResponse(raw)
     if (response !== undefined) {
-      if (!tokenMatches(response.token, options.token) || !httpSessionAlive()) {
+      if (!tokenMatches(response.token, options.token) || !pollSessionAlive("http")) {
         return jsonResponse(401, { type: "error", error: "Authentication failed" })
       }
       if (session?.kind === "http") {
@@ -224,6 +240,59 @@ export function startBridge(options: BridgeOptions): LiveBridge {
     }
 
     return jsonResponse(400, { type: "error", error: "Unknown poll message" })
+  }
+
+  async function handleFilePayload(raw: unknown): Promise<void> {
+    const hello = helloMessageSchema.safeParse(raw)
+    if (hello.success) {
+      if (!tokenMatches(hello.data.token, options.token)) {
+        return
+      }
+      dropSession()
+      session = {
+        kind: "file",
+        agent: { ...hello.data.agent, transport: "file" },
+        lastSeen: Date.now(),
+      }
+      await writeAgentFile({ type: "ready" })
+      return
+    }
+
+    const response = parseHttpAgentResponse(raw)
+    if (response === undefined || !tokenMatches(response.token, options.token)) {
+      return
+    }
+    if (!pollSessionAlive("file") && session?.kind !== "file") {
+      return
+    }
+    if (session?.kind === "file") {
+      session.lastSeen = Date.now()
+    }
+    acceptResponse(response)
+  }
+
+  if (options.filePollDir !== undefined) {
+    const directory = options.filePollDir
+    const toHost = join(directory, "to-host.json")
+    void mkdir(directory, { recursive: true })
+    fileTimer = setInterval(() => {
+      void (async () => {
+        let contents: string
+        try {
+          contents = await readFile(toHost, "utf8")
+        } catch {
+          return
+        }
+        if (contents === lastFilePayload) {
+          return
+        }
+        lastFilePayload = contents
+        const parsed = parseJson(contents)
+        if (parsed !== null) {
+          await handleFilePayload(parsed)
+        }
+      })()
+    }, FILE_POLL_MS)
   }
 
   const server = Bun.serve<SocketData>({
@@ -312,14 +381,21 @@ export function startBridge(options: BridgeOptions): LiveBridge {
       if (session?.kind === "websocket") {
         return { connected: true, agent: session.agent }
       }
-      if (httpSessionAlive() && session?.kind === "http") {
+      if (pollSessionAlive("http") && session?.kind === "http") {
+        return { connected: true, agent: session.agent }
+      }
+      if (pollSessionAlive("file") && session?.kind === "file") {
         return { connected: true, agent: session.agent }
       }
       return { connected: false }
     },
     async request(method, params, timeoutMs = defaultTimeoutMs) {
       const current = session
-      if (current === undefined || (current.kind === "http" && !httpSessionAlive())) {
+      if (
+        current === undefined ||
+        (current.kind === "http" && !pollSessionAlive("http")) ||
+        (current.kind === "file" && !pollSessionAlive("file"))
+      ) {
         throw new BridgeUnavailableError()
       }
 
@@ -333,12 +409,18 @@ export function startBridge(options: BridgeOptions): LiveBridge {
         pending.set(id, { resolve, reject, timeout })
         if (current.kind === "websocket") {
           current.socket.send(JSON.stringify(agentRequest))
-        } else {
+        } else if (current.kind === "http") {
           deliverHttp(agentRequest)
+        } else {
+          void writeAgentFile(agentRequest)
         }
       })
     },
     async stop() {
+      if (fileTimer !== undefined) {
+        clearInterval(fileTimer)
+        fileTimer = undefined
+      }
       dropSession()
       await Promise.race([server.stop(true), Bun.sleep(STOP_GRACE_MS)])
     },

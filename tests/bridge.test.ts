@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { BRIDGE_PATH, type LiveBridge, startBridge } from "../src/bridge.js"
 import { BridgeTimeoutError, BridgeUnavailableError } from "../src/errors.js"
 import { type AgentInfo, requestMessageSchema, responseMessageSchema } from "../src/protocol.js"
@@ -177,5 +180,65 @@ describe("live bridge", () => {
     })
     expect(response.status).toBe(401)
     expect(bridge.status()).toEqual({ connected: false })
+  })
+
+  test("authenticates over file poll and correlates a response", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "live-mcp-file-"))
+    try {
+      bridge = startBridge({ token: TOKEN, port: 0, filePollDir: directory })
+      await writeFile(
+        join(directory, "to-host.json"),
+        JSON.stringify({ type: "hello", token: TOKEN, agent: AGENT }),
+      )
+      let ready: unknown
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        try {
+          ready = JSON.parse(await readFile(join(directory, "to-agent.json"), "utf8"))
+          break
+        } catch {
+          await Bun.sleep(50)
+        }
+      }
+      expect(ready).toEqual({ type: "ready" })
+      expect(bridge.status()).toMatchObject({
+        connected: true,
+        agent: { ...AGENT, transport: "file" },
+      })
+
+      const pendingResult = bridge.request("listScripts", { query: "door" })
+      let request: ReturnType<typeof requestMessageSchema.parse> | undefined
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const payload: unknown = JSON.parse(
+          await readFile(join(directory, "to-agent.json"), "utf8"),
+        )
+        if (
+          typeof payload === "object" &&
+          payload !== null &&
+          "type" in payload &&
+          payload.type === "request"
+        ) {
+          request = requestMessageSchema.parse(payload)
+          break
+        }
+        await Bun.sleep(50)
+      }
+      if (request === undefined) {
+        throw new TestHarnessError("File poll did not deliver a request")
+      }
+      expect(request.method).toBe("listScripts")
+      await writeFile(
+        join(directory, "to-host.json"),
+        JSON.stringify({
+          type: "response",
+          token: TOKEN,
+          id: request.id,
+          ok: true,
+          result: { scripts: [], total: 0, returned: 0 },
+        }),
+      )
+      await expect(pendingResult).resolves.toEqual({ scripts: [], total: 0, returned: 0 })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 })

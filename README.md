@@ -3,7 +3,8 @@
 stdio MCP plus a loopback WebSocket. An agent uses it to inspect a live Roblox
 client: instances, scripts, source, and eval.
 
-Both sides share one token. Listeners bind only to `127.0.0.1`.
+Both sides share one token. Listeners bind only to `127.0.0.1`. Prefer
+`127.0.0.1` over `localhost`.
 
 ## Connect
 
@@ -23,16 +24,23 @@ getgenv().LiveMcp = {
 loadstring(readfile("agent.lua"), "live-mcp")()
 ```
 
-The default URL is `ws://127.0.0.1:32145/live`. The agent prefers
-`WebSocket.connect` (UNC / sUNC). If that function is missing, it polls
-`http://127.0.0.1:32145/live/poll` with `request` (`http_request` /
-`http.request` aliases). It retries until the MCP process is listening and
-replaces an older copy if the loader runs again.
+The default URL is `ws://127.0.0.1:32145/live`. The agent probes transports in
+order:
+
+1. `WebSocket.connect`, then `websocket.connect`, then `WebSocket.new`, then
+   `syn.websocket.connect`. Socket surface is `OnMessage`/`OnClose` `:Connect`,
+   `Send`, and `Close`.
+2. If WS connect fails, HTTP poll `http://127.0.0.1:32145/live/poll` via
+   `request` / `http.request` / `http_request` / `syn.request`.
+3. If neither WS nor request works, file-poll `writefile`/`readfile` under
+   `live-mcp/` in the executor workspace. Point `LIVE_MCP_FILEPOLL` at that
+   directory on the host.
 
 The agent capability-detects globals. It does not branch on
-`identifyexecutor()` names. `loadstring` and `getgenv` are required.
-`decompile` is used when present; otherwise `getscriptbytecode` is returned.
-`decompile` is a vendor extra, not UNC/sUNC.
+`identifyexecutor()` / `getexecutorname` names. Those are telemetry on hello
+only. `loadstring` and `getgenv` are required. `decompile` is not UNC/sUNC: it
+is pcall'd when present, then `getscriptbytecode`, then optional
+`getscriptclosure` + `debug.getconstants`.
 
 Run the MCP server with that token:
 
@@ -62,9 +70,9 @@ Each tool returns JSON text.
 
 | Tool | Returns |
 | --- | --- |
-| `roblox_list_instances` | An instance plus matches (`name`, `className`, `path`, `childCount`, `isScript`). Optional `path` (default `game`), `scope` (`children` / `all` / `nil`), `query`, `className`, and `limit`. `all` uses `getinstances` or `game:GetDescendants()`. `nil` uses `getnilinstances`. |
-| `roblox_list_scripts` | Matching scripts (`name`, `className`, `path`). Optional `query`, `scope` (`all` / `running` / `loaded` / `cached`), and `limit`. Uses `getscripts` / `getloadedmodules` / `getrunningscripts`, or filters instances by class. |
-| `roblox_read_source` | `encoding=source` paged text when `decompile` exists; otherwise `encoding=bytecode` (`bytecodeFormat=hex`). |
+| `roblox_list_instances` | An instance plus matches (`name`, `className`, `path`, `childCount`, `isScript`). Optional `path` (default `game`), `scope` (`children` / `all` / `nil`), `query`, `className`, and `limit`. `all` uses `getinstances` plus `getnilinstances`, else `game:GetDescendants()`. |
+| `roblox_list_scripts` | Matching scripts (`name`, `className`, `path`). Optional `query`, `scope` (`all` / `running` / `loaded` / `cached`), and `limit`. Uses `getscripts` when present, else filters instances. `getrunningscripts` / `getloadedmodules` are scopes. Every getter is pcall'd. |
+| `roblox_read_source` | `{ kind, data }` where `kind` is `luau`, `bytecode`, `constants`, or `empty`. Never requires `decompile`. |
 | `roblox_eval` | JSON-safe values returned by an explicit Luau chunk. Marked destructive. |
 
 If no authenticated client is connected, tools fail with that error.

@@ -56,7 +56,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "List live Roblox instances",
       description:
-        "List live instances. Default lists children of a DataModel path. scope=all uses getinstances (or GetDescendants). scope=nil uses getnilinstances.",
+        "List live instances. Default lists children of a DataModel path. scope=all uses getinstances plus getnilinstances, else GetDescendants. scope=nil uses getnilinstances.",
       inputSchema: listInstancesInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -77,7 +77,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "List live Roblox scripts",
       description:
-        "List client-visible scripts from the live game so another tool can read one by path.",
+        "List client-visible scripts. Uses getscripts when present, else filters instances. getrunningscripts / getloadedmodules are scopes. Every getter is pcall'd.",
       inputSchema: listScriptsInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -96,7 +96,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "Read live Roblox script source",
       description:
-        "Read one script path. Uses decompile when present; otherwise returns getscriptbytecode. Decompile is a vendor extra, not UNC/sUNC.",
+        "Read one script path. pcall decompile when present (not UNC/sUNC); else getscriptbytecode; else constants. Returns { kind: luau|bytecode|constants|empty, data }.",
       inputSchema: readSourceInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },

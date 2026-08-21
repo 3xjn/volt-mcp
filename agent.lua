@@ -6,6 +6,7 @@ local environment = getgenv()
 local configuration = assert(environment.LiveMcp, "Set getgenv().LiveMcp before loading the agent")
 local token = assert(configuration.Token, "LiveMcp.Token is required")
 local endpoint = configuration.Url or "ws://127.0.0.1:32145/live"
+endpoint = endpoint:gsub("://localhost", "://127.0.0.1")
 
 assert(type(token) == "string" and #token >= 32, "LiveMcp.Token must be at least 32 characters")
 assert(type(endpoint) == "string", "LiveMcp.Url must be a string")
@@ -15,20 +16,38 @@ local function envFunction(name)
     return type(value) == "function" and value or nil
 end
 
-local function tableFunction(tableName, key)
-    local container = environment[tableName]
-    return type(container) == "table" and type(container[key]) == "function" and container[key] or nil
+local function nestedFunction(...)
+    local current = environment
+    for index = 1, select("#", ...) do
+        if type(current) ~= "table" then
+            return nil
+        end
+        current = current[select(index, ...)]
+    end
+    return type(current) == "function" and current or nil
 end
 
 local compile = envFunction("loadstring") or (type(loadstring) == "function" and loadstring)
 assert(compile, "loadstring is required")
 
-local websocketConnect = tableFunction("WebSocket", "connect")
+local websocketConnectors = {}
+local function addConnector(connector)
+    if connector then
+        table.insert(websocketConnectors, connector)
+    end
+end
+addConnector(nestedFunction("WebSocket", "connect"))
+addConnector(nestedFunction("websocket", "connect"))
+addConnector(nestedFunction("WebSocket", "new"))
+addConnector(nestedFunction("syn", "websocket", "connect"))
 local httpRequest = envFunction("request")
+    or nestedFunction("http", "request")
     or envFunction("http_request")
-    or tableFunction("http", "request")
-    or tableFunction("syn", "request")
-    or tableFunction("fluxus", "request")
+    or nestedFunction("syn", "request")
+local writeFile = envFunction("writefile")
+local readFile = envFunction("readfile")
+local isFile = envFunction("isfile")
+local makeFolder = envFunction("makefolder")
 local getAllInstances = envFunction("getinstances")
 local getNilInstances = envFunction("getnilinstances")
 local getCachedScripts = envFunction("getscripts")
@@ -36,9 +55,26 @@ local getLoadedModules = envFunction("getloadedmodules")
 local getRunningScripts = envFunction("getrunningscripts")
 local decompileSource = envFunction("decompile")
 local dumpBytecode = envFunction("getscriptbytecode") or envFunction("dumpstring")
+local getScriptClosure = envFunction("getscriptclosure") or envFunction("getscriptfunction")
+local debugLibrary = environment.debug
+local getConstants = type(debugLibrary) == "table"
+        and type(debugLibrary.getconstants) == "function"
+        and debugLibrary.getconstants
+    or envFunction("getconstants")
 local identify = envFunction("identifyexecutor") or envFunction("getexecutorname")
 
-assert(websocketConnect or httpRequest, "WebSocket.connect or request is required")
+local filePollRoot = type(configuration.FilePoll) == "string" and configuration.FilePoll or "live-mcp"
+local toHostPath = filePollRoot .. "/to-host.json"
+local toAgentPath = filePollRoot .. "/to-agent.json"
+
+local function hasWebsocketConnector()
+    for _, connector in ipairs(websocketConnectors) do
+        if connector then
+            return true
+        end
+    end
+    return false
+end
 
 if environment.LiveMcpAgent then
     environment.LiveMcpAgent.Stop()
@@ -284,8 +320,19 @@ local function callList(getter)
 end
 
 local function collectAllInstances()
-    local values = callList(getAllInstances)
-    if values then
+    local instances = callList(getAllInstances)
+    local nils = callList(getNilInstances)
+    if instances or nils then
+        local seen = {}
+        local values = {}
+        for _, list in ipairs({ instances or {}, nils or {} }) do
+            for _, instance in ipairs(list) do
+                if typeof(instance) == "Instance" and not seen[instance] then
+                    seen[instance] = true
+                    table.insert(values, instance)
+                end
+            end
+        end
         return values
     end
     local descendants = game:GetDescendants()
@@ -326,18 +373,24 @@ end
 local function collectScripts(scope)
     local scripts = {}
     local seen = {}
-    local found = false
 
-    if scope == "all" or scope == "cached" then
-        found = appendScripts(scripts, seen, getCachedScripts) or found
+    if scope == "running" then
+        if appendScripts(scripts, seen, getRunningScripts) then
+            return scripts
+        end
+        return collectByClass()
     end
-    if scope == "all" or scope == "running" then
-        found = appendScripts(scripts, seen, getRunningScripts) or found
+    if scope == "loaded" then
+        if appendScripts(scripts, seen, getLoadedModules) then
+            return scripts
+        end
+        return collectByClass()
     end
-    if scope == "all" or scope == "loaded" then
-        found = appendScripts(scripts, seen, getLoadedModules) or found
-    end
-    if found then
+    if appendScripts(scripts, seen, getCachedScripts) then
+        if scope == "all" then
+            appendScripts(scripts, seen, getRunningScripts)
+            appendScripts(scripts, seen, getLoadedModules)
+        end
         return scripts
     end
     return collectByClass()
@@ -362,6 +415,21 @@ local function pageSource(source, startLine, lineCount)
         table.insert(page, lines[index])
     end
     return table.concat(page, "\n"), startLine, endLine, #lines, endLine < #lines
+end
+
+local function readConstants(instance)
+    if not getScriptClosure or not getConstants then
+        return nil
+    end
+    local gotClosure, closure = pcall(getScriptClosure, instance)
+    if not gotClosure or type(closure) ~= "function" then
+        return nil
+    end
+    local gotConstants, constants = pcall(getConstants, closure)
+    if not gotConstants or type(constants) ~= "table" then
+        return nil
+    end
+    return constants
 end
 
 local function filterInstances(values, query, className, limit, parent)
@@ -407,7 +475,12 @@ function handlers.listInstances(params)
     if scope == "nil" then
         values = callList(getNilInstances)
         if not values then
-            error("getnilinstances is unavailable")
+            values = {}
+            for _, instance in ipairs(collectAllInstances()) do
+                if typeof(instance) == "Instance" and instance.Parent == nil then
+                    table.insert(values, instance)
+                end
+            end
         end
     elseif scope == "all" then
         if params.path then
@@ -483,52 +556,58 @@ function handlers.readSource(params)
     if not cached then
         if decompileSource then
             local succeeded, source = pcall(decompileSource, instance)
-            if succeeded and type(source) == "string" then
-                cached = { encoding = "source", text = source }
+            if succeeded and type(source) == "string" and #source > 0 then
+                cached = { kind = "luau", data = source }
+            end
+        end
+        if not cached and dumpBytecode then
+            local succeeded, bytecode = pcall(dumpBytecode, instance)
+            if succeeded and type(bytecode) == "string" and #bytecode > 0 then
+                cached = { kind = "bytecode", data = bytecode }
             end
         end
         if not cached then
-            if not dumpBytecode then
-                error("No decompile or getscriptbytecode")
+            local constants = readConstants(instance)
+            if constants then
+                cached = { kind = "constants", data = constants }
+            else
+                cached = { kind = "empty", data = "" }
             end
-            local succeeded, bytecode = pcall(dumpBytecode, instance)
-            if not succeeded then
-                error(bytecode)
-            end
-            if type(bytecode) ~= "string" then
-                error("Script has no bytecode")
-            end
-            cached = { encoding = "bytecode", text = bytecode }
         end
         sourceCache[instance] = cached
     end
 
     local path = getInstancePath(instance)
-    if cached.encoding == "bytecode" then
+    if cached.kind == "luau" then
+        local source, startLine, endLine, totalLines, truncated = pageSource(
+            cached.data,
+            params.startLine,
+            params.lineCount
+        )
         return {
             path = path,
             className = instance.ClassName,
-            encoding = "bytecode",
-            bytecodeFormat = "hex",
-            bytecode = hexEncode(cached.text),
-            byteLength = #cached.text,
+            kind = "luau",
+            data = source,
+            startLine = startLine,
+            endLine = endLine,
+            totalLines = totalLines,
+            truncated = truncated,
         }
     end
-
-    local source, startLine, endLine, totalLines, truncated = pageSource(
-        cached.text,
-        params.startLine,
-        params.lineCount
-    )
+    if cached.kind == "bytecode" then
+        return {
+            path = path,
+            className = instance.ClassName,
+            kind = "bytecode",
+            data = hexEncode(cached.data),
+        }
+    end
     return {
         path = path,
         className = instance.ClassName,
-        encoding = "source",
-        source = source,
-        startLine = startLine,
-        endLine = endLine,
-        totalLines = totalLines,
-        truncated = truncated,
+        kind = cached.kind,
+        data = cached.data,
     }
 end
 
@@ -552,12 +631,14 @@ end
 local stopped = false
 local socket
 local inFlight = 0
-local transportName = websocketConnect and "websocket" or "http"
+local transportName = "websocket"
 
 local function capabilities()
     return {
-        websocket = websocketConnect ~= nil,
+        websocket = hasWebsocketConnector(),
         httpRequest = httpRequest ~= nil,
+        writefile = writeFile ~= nil,
+        readfile = readFile ~= nil,
         getinstances = getAllInstances ~= nil,
         getnilinstances = getNilInstances ~= nil,
         getscripts = getCachedScripts ~= nil,
@@ -565,6 +646,8 @@ local function capabilities()
         getrunningscripts = getRunningScripts ~= nil,
         decompile = decompileSource ~= nil,
         getscriptbytecode = dumpBytecode ~= nil,
+        getscriptclosure = getScriptClosure ~= nil,
+        getconstants = getConstants ~= nil,
     }
 end
 
@@ -656,6 +739,9 @@ local function handleMessage(message, isBinary)
     if isBinary then
         return
     end
+    if type(message) ~= "string" then
+        return
+    end
     local decoded, request = pcall(HttpService.JSONDecode, HttpService, message)
     if decoded then
         handleRequest(request)
@@ -693,57 +779,172 @@ local function httpCall(payload)
     end
 end
 
-local connectWebSocket
-local connectHttp
-
-connectWebSocket = function()
-    if stopped then
-        return
-    end
-
-    local connected, connection = pcall(websocketConnect, endpoint)
-    if not connected then
-        task.delay(2, connectWebSocket)
-        return
-    end
-
-    transportName = "websocket"
-    socket = connection
-    connection.OnMessage:Connect(handleMessage)
-    connection.OnClose:Connect(function()
-        if stopped or socket ~= connection then
-            return
-        end
-        pcall(function()
-            connection:Close()
-        end)
-        socket = nil
-        task.delay(2, connectWebSocket)
-    end)
-    sendJson(helloPayload())
+local function canFilePoll()
+    return writeFile ~= nil and readFile ~= nil
 end
 
-connectHttp = function()
+local function fileRead(path)
+    if isFile then
+        local exists, present = pcall(isFile, path)
+        if exists and present == false then
+            return nil
+        end
+    end
+    local succeeded, contents = pcall(readFile, path)
+    if succeeded and type(contents) == "string" then
+        return contents
+    end
+end
+
+local function fileWrite(path, contents)
+    return pcall(writeFile, path, contents)
+end
+
+local function fileDecode(path)
+    local contents = fileRead(path)
+    if not contents then
+        return nil
+    end
+    local decoded, value = pcall(HttpService.JSONDecode, HttpService, contents)
+    if decoded and type(value) == "table" then
+        return value
+    end
+end
+
+local function attachSocket(connection)
+    if type(connection) ~= "table" and type(connection) ~= "userdata" then
+        return false
+    end
+    if type(connection.Send) ~= "function" or type(connection.Close) ~= "function" then
+        return false
+    end
+    local onMessage = connection.OnMessage
+    local onClose = connection.OnClose
+    if type(onMessage) ~= "table" and type(onMessage) ~= "userdata" then
+        return false
+    end
+    if type(onMessage.Connect) ~= "function" then
+        return false
+    end
+    onMessage:Connect(handleMessage)
+    if (type(onClose) == "table" or type(onClose) == "userdata") and type(onClose.Connect) == "function" then
+        onClose:Connect(function()
+            if stopped or socket ~= connection then
+                return
+            end
+            pcall(function()
+                connection:Close()
+            end)
+            socket = nil
+        end)
+    end
+    return true
+end
+
+local function tryWebSocket()
+    if endpoint:sub(1, 4) == "http" then
+        return false
+    end
+    for _, connector in ipairs(websocketConnectors) do
+        if stopped then
+            return false
+        end
+        if connector then
+            local connected, connection = pcall(connector, endpoint)
+            if connected and attachSocket(connection) then
+                transportName = "websocket"
+                socket = connection
+                sendJson(helloPayload())
+                return true
+            end
+            if type(connection) == "table" or type(connection) == "userdata" then
+                pcall(function()
+                    connection:Close()
+                end)
+            end
+        end
+    end
+    return false
+end
+
+local function runHttp()
+    if not httpRequest then
+        return false
+    end
+    transportName = "http"
+    local ready = httpCall(helloPayload())
+    if not ready or ready.type ~= "ready" then
+        return false
+    end
     while not stopped do
-        transportName = "http"
-        local ready = httpCall(helloPayload())
-        if not ready or ready.type ~= "ready" then
-            task.wait(2)
-        else
-            while not stopped do
-                local message = httpCall({ type = "poll", token = token })
-                if not message then
-                    break
-                end
-                if message.type == "request" then
-                    local payload = handleRequest(message)
-                    if payload then
-                        httpCall(payload)
-                    end
-                elseif message.type ~= "idle" then
-                    break
+        local message = httpCall({ type = "poll", token = token })
+        if not message then
+            return true
+        end
+        if message.type == "request" then
+            local payload = handleRequest(message)
+            if payload then
+                httpCall(payload)
+            end
+        elseif message.type ~= "idle" then
+            return true
+        end
+    end
+    return true
+end
+
+local function runFile()
+    if not canFilePoll() then
+        return false
+    end
+    transportName = "file"
+    if makeFolder then
+        pcall(makeFolder, filePollRoot)
+    end
+    if not fileWrite(toHostPath, HttpService:JSONEncode(helloPayload())) then
+        return false
+    end
+    local lastAgent = ""
+    local connected = false
+    local idle = 0
+    while not stopped do
+        local contents = fileRead(toAgentPath)
+        if contents and contents ~= lastAgent then
+            lastAgent = contents
+            idle = 0
+            local message = fileDecode(toAgentPath)
+            if message and message.type == "ready" then
+                connected = true
+            elseif message and message.type == "request" then
+                connected = true
+                local payload = handleRequest(message)
+                if payload then
+                    fileWrite(toHostPath, HttpService:JSONEncode(payload))
                 end
             end
+        else
+            idle += 0.2
+            if not connected and idle > 5 then
+                return false
+            end
+        end
+        task.wait(0.2)
+    end
+    return true
+end
+
+local function connect()
+    while not stopped do
+        if tryWebSocket() then
+            while socket and not stopped do
+                task.wait(0.2)
+            end
+        elseif runHttp() then
+            -- HTTP session ended; retry the full probe order.
+        elseif runFile() then
+            -- File poll runs until stopped.
+        else
+            task.wait(2)
         end
     end
 end
@@ -761,9 +962,5 @@ function agent.Stop()
 end
 
 environment.LiveMcpAgent = agent
-if websocketConnect and endpoint:sub(1, 4) ~= "http" then
-    task.spawn(connectWebSocket)
-else
-    task.spawn(connectHttp)
-end
+task.spawn(connect)
 return agent
