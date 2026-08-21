@@ -3,13 +3,13 @@ local Players = game:GetService("Players")
 
 assert(type(getgenv) == "function", "getgenv is required")
 local environment = getgenv()
-local configuration = assert(environment.LiveMcp, "Set getgenv().LiveMcp before loading the agent")
-local token = assert(configuration.Token, "LiveMcp.Token is required")
+local configuration = assert(environment.RobloxClientMcp, "Set getgenv().RobloxClientMcp before loading the agent")
+local token = assert(configuration.Token, "RobloxClientMcp.Token is required")
 local endpoint = configuration.Url or "ws://127.0.0.1:32145/live"
 endpoint = endpoint:gsub("://localhost", "://127.0.0.1")
 
-assert(type(token) == "string" and #token >= 32, "LiveMcp.Token must be at least 32 characters")
-assert(type(endpoint) == "string", "LiveMcp.Url must be a string")
+assert(type(token) == "string" and #token >= 32, "RobloxClientMcp.Token must be at least 32 characters")
+assert(type(endpoint) == "string", "RobloxClientMcp.Url must be a string")
 
 local function envFunction(name)
     local value = environment[name]
@@ -59,7 +59,7 @@ local getConstants = type(debugLibrary) == "table"
     or envFunction("getconstants")
 local identify = envFunction("identifyexecutor") or envFunction("getexecutorname")
 
-local filePollRoot = type(configuration.FilePoll) == "string" and configuration.FilePoll or "live-mcp"
+local filePollRoot = type(configuration.FilePoll) == "string" and configuration.FilePoll or "roblox-client-mcp"
 local toHostPath = filePollRoot .. "/to-host.json"
 local toAgentPath = filePollRoot .. "/to-agent.json"
 
@@ -82,8 +82,8 @@ local function decodeJson(source)
     end
 end
 
-if environment.LiveMcpAgent then
-    environment.LiveMcpAgent.Stop()
+if environment.RobloxClientMcpAgent then
+    environment.RobloxClientMcpAgent.Stop()
 end
 
 local function executorInfo()
@@ -618,7 +618,7 @@ function handlers.readSource(params)
 end
 
 function handlers.eval(params)
-    local chunk, compileError = compile(params.code, params.chunkName or "live-mcp")
+    local chunk, compileError = compile(params.code, params.chunkName or "roblox-client-mcp")
     if not chunk then
         error(compileError)
     end
@@ -934,6 +934,6 @@ function agent.Stop()
     end
 end
 
-environment.LiveMcpAgent = agent
+environment.RobloxClientMcpAgent = agent
 task.spawn(connect)
 return agent

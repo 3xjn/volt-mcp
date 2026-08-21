@@ -36,7 +36,7 @@ const readSourceInput = z.object({
 
 const evalInput = z.object({
   code: z.string().min(1).max(100_000).describe("Luau chunk to execute in the live client"),
-  chunkName: z.string().min(1).max(100).default("live-mcp"),
+  chunkName: z.string().min(1).max(100).default("roblox-client-mcp"),
 })
 
 function textResult(value: unknown) {
@@ -47,7 +47,7 @@ function textResult(value: unknown) {
 
 export function createMcpServer(bridge: LiveBridge): McpServer {
   const server = new McpServer({
-    name: "live-mcp",
+    name: "roblox-client-mcp",
     version: "0.1.1",
   })
 

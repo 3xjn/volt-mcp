@@ -7,7 +7,7 @@ function read(path: string): string {
   return readFileSync(new URL(path, repositoryRoot), "utf8")
 }
 
-test("uses a generic live-client identity", () => {
+test("uses a roblox-client-mcp identity", () => {
   const packageJson = JSON.parse(read("package.json")) as {
     readonly name?: unknown
     readonly description?: unknown
@@ -25,11 +25,13 @@ test("uses a generic live-client identity", () => {
     read("agent.lua"),
   ].join("\n")
 
-  expect(packageJson.name).toBe("@3xjn/live-mcp")
-  expect(packageJson.description).toBe("Generic stdio MCP for inspecting a live Roblox client")
+  expect(packageJson.name).toBe("@3xjn/roblox-client-mcp")
+  expect(packageJson.description).toBe(
+    "Generic stdio MCP for inspecting a live Roblox client (not Studio)",
+  )
   expect(packageJson.repository).toEqual({
     type: "git",
-    url: "git+https://github.com/3xjn/live-mcp.git",
+    url: "git+https://github.com/3xjn/roblox-client-mcp.git",
   })
   expect(packageJson.scripts).toEqual({
     start: "bun run src/index.ts",
@@ -38,19 +40,21 @@ test("uses a generic live-client identity", () => {
     test: "bun test",
     check: "bun run typecheck && bun run lint && bun test",
   })
-  expect(publicSurface).toContain('name: "live-mcp"')
-  expect(publicSurface).toContain("LIVE_MCP_TOKEN")
-  expect(publicSurface).toContain("LIVE_MCP_PORT")
-  expect(publicSurface).toContain("LIVE_MCP_FILEPOLL")
+  expect(publicSurface).toContain('name: "roblox-client-mcp"')
+  expect(publicSurface).toContain("ROBLOX_CLIENT_MCP_TOKEN")
+  expect(publicSurface).toContain("ROBLOX_CLIENT_MCP_PORT")
+  expect(publicSurface).toContain("ROBLOX_CLIENT_MCP_FILEPOLL")
   expect(publicSurface).toContain("ws://127.0.0.1:")
   expect(publicSurface).toContain("/live")
   expect(publicSurface).toContain("/live/poll")
-  expect(publicSurface).toContain("environment.LiveMcp")
+  expect(publicSurface).toContain("environment.RobloxClientMcp")
   expect(publicSurface).toContain("function handlers.listInstances")
   expect(publicSurface).toContain("function handlers.listScripts")
   expect(publicSurface).toContain("function handlers.readSource")
   expect(publicSurface).toContain("function handlers.eval")
   expect(publicSurface).not.toMatch(/Volt|volt-mcp|VOLT_MCP/)
+  expect(publicSurface).not.toMatch(/LiveMcp|LIVE_MCP/)
+  expect(publicSurface).not.toContain("live-mcp")
   expect(publicSurface).not.toMatch(/Hydroxide|hydroxide|HYDROXIDE/)
   expect(publicSurface).not.toContain("pair_request")
   expect(publicSurface).not.toContain("pair_challenge")

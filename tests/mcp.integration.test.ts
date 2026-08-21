@@ -89,8 +89,8 @@ function childEnvironment(
       environment[key] = value
     }
   }
-  environment["LIVE_MCP_TOKEN"] = TOKEN
-  environment["LIVE_MCP_PORT"] = String(port)
+  environment.ROBLOX_CLIENT_MCP_TOKEN = TOKEN
+  environment.ROBLOX_CLIENT_MCP_PORT = String(port)
   return { ...environment, ...extra }
 }
 
@@ -108,7 +108,7 @@ function openStdioClient(
     env: childEnvironment(port, extra),
     stderr: "pipe",
   })
-  return { client: new Client({ name: "live-mcp-test", version: "0.1.1" }), transport }
+  return { client: new Client({ name: "roblox-client-mcp-test", version: "0.1.1" }), transport }
 }
 
 async function expectDoorManager(toolResult: Promise<unknown>): Promise<void> {
@@ -209,10 +209,10 @@ test("serves a live client response over HTTP poll", async () => {
   }
 })
 
-test("serves a live client response over LIVE_MCP_FILEPOLL", async () => {
+test("serves a live client response over ROBLOX_CLIENT_MCP_FILEPOLL", async () => {
   const port = await getUnusedPort()
-  const directory = await mkdtemp(join(tmpdir(), "live-mcp-filepoll-"))
-  const { client, transport } = openStdioClient(port, { LIVE_MCP_FILEPOLL: directory })
+  const directory = await mkdtemp(join(tmpdir(), "roblox-client-mcp-filepoll-"))
+  const { client, transport } = openStdioClient(port, { ROBLOX_CLIENT_MCP_FILEPOLL: directory })
   const toHost = join(directory, "to-host.json")
   const toAgent = join(directory, "to-agent.json")
 

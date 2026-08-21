@@ -1,10 +1,10 @@
 {
-  "name": "@3xjn/live-mcp",
+  "name": "@3xjn/roblox-client-mcp",
   "version": "0.1.1",
-  "description": "Generic stdio MCP for inspecting a live Roblox client",
+  "description": "Generic stdio MCP for inspecting a live Roblox client (not Studio)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/3xjn/live-mcp.git"
+    "url": "git+https://github.com/3xjn/roblox-client-mcp.git"
   },
   "private": true,
   "type": "module",
