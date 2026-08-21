@@ -11,6 +11,7 @@ test("uses a generic live-client identity", () => {
   const packageJson = JSON.parse(read("package.json")) as {
     readonly name?: unknown
     readonly description?: unknown
+    readonly repository?: { readonly type?: unknown; readonly url?: unknown }
     readonly scripts?: Readonly<Record<string, unknown>>
   }
   const publicSurface = [
@@ -26,6 +27,10 @@ test("uses a generic live-client identity", () => {
 
   expect(packageJson.name).toBe("@3xjn/live-mcp")
   expect(packageJson.description).toBe("Generic stdio MCP for inspecting a live Roblox client")
+  expect(packageJson.repository).toEqual({
+    type: "git",
+    url: "git+https://github.com/3xjn/live-mcp.git",
+  })
   expect(packageJson.scripts).toEqual({
     start: "bun run src/index.ts",
     typecheck: "tsc --noEmit",

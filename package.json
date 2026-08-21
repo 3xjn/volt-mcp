@@ -2,6 +2,10 @@
   "name": "@3xjn/live-mcp",
   "version": "0.1.1",
   "description": "Generic stdio MCP for inspecting a live Roblox client",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/3xjn/live-mcp.git"
+  },
   "private": true,
   "type": "module",
   "scripts": {
