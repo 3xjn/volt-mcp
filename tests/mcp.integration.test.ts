@@ -1,11 +1,34 @@
 import { expect, test } from "bun:test"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod"
-import { BRIDGE_PATH } from "../src/bridge.js"
+import { BRIDGE_PATH, POLL_PATH } from "../src/bridge.js"
 import { requestMessageSchema } from "../src/protocol.js"
 
 const TOKEN = "abcdef0123456789abcdef0123456789"
+const AGENT = {
+  agentVersion: "integration",
+  placeId: 321,
+  jobId: "integration-job",
+  playerName: "Builder",
+  userId: 654,
+}
+const SCRIPT_RESULT = {
+  scripts: [
+    {
+      name: "DoorManager",
+      className: "LocalScript",
+      path: 'game:GetService("Players")["Builder"]["PlayerScripts"]["DoorManager"]',
+    },
+  ],
+  total: 1,
+  returned: 1,
+  scope: "all",
+  query: "door",
+}
 
 class IntegrationHarnessError extends Error {
   readonly name = "IntegrationHarnessError"
@@ -56,7 +79,10 @@ async function getUnusedPort(): Promise<number> {
   return port
 }
 
-function childEnvironment(port: number): Record<string, string> {
+function childEnvironment(
+  port: number,
+  extra: Record<string, string> = {},
+): Record<string, string> {
   const environment: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) {
@@ -65,19 +91,56 @@ function childEnvironment(port: number): Record<string, string> {
   }
   environment["LIVE_MCP_TOKEN"] = TOKEN
   environment["LIVE_MCP_PORT"] = String(port)
-  return environment
+  return { ...environment, ...extra }
 }
 
-test("serves a live client response through the stdio MCP transport", async () => {
-  const port = await getUnusedPort()
+function openStdioClient(
+  port: number,
+  extra?: Record<string, string>,
+): {
+  client: Client
+  transport: StdioClientTransport
+} {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["run", "src/index.ts"],
     cwd: import.meta.dir.replace(/[\\/]tests$/, ""),
-    env: childEnvironment(port),
+    env: childEnvironment(port, extra),
     stderr: "pipe",
   })
-  const client = new Client({ name: "live-mcp-test", version: "0.1.1" })
+  return { client: new Client({ name: "live-mcp-test", version: "0.1.1" }), transport }
+}
+
+async function expectDoorManager(toolResult: Promise<unknown>): Promise<void> {
+  const parsed = z
+    .object({
+      content: z.array(z.object({ type: z.literal("text"), text: z.string() })).min(1),
+    })
+    .parse(await toolResult)
+  expect(parsed.content[0]?.text).toContain("DoorManager")
+}
+
+async function waitForJsonFile(
+  path: string,
+  isMatch: (value: unknown) => boolean,
+): Promise<unknown> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const value: unknown = JSON.parse(await readFile(path, "utf8"))
+      if (isMatch(value)) {
+        return value
+      }
+    } catch {
+      // File has not been written yet.
+    }
+    await Bun.sleep(50)
+  }
+  throw new IntegrationHarnessError(`Timed out waiting for ${path}`)
+}
+
+test("serves a live client response through the stdio MCP transport", async () => {
+  const port = await getUnusedPort()
+  const { client, transport } = openStdioClient(port)
   let socket: WebSocket | undefined
 
   try {
@@ -85,19 +148,7 @@ test("serves a live client response through the stdio MCP transport", async () =
     socket = new WebSocket(`ws://127.0.0.1:${port}${BRIDGE_PATH}`)
     await waitForOpen(socket)
     const ready = waitForMessage(socket)
-    socket.send(
-      JSON.stringify({
-        type: "hello",
-        token: TOKEN,
-        agent: {
-          agentVersion: "integration",
-          placeId: 321,
-          jobId: "integration-job",
-          playerName: "Builder",
-          userId: 654,
-        },
-      }),
-    )
+    socket.send(JSON.stringify({ type: "hello", token: TOKEN, agent: AGENT }))
     expect(await ready).toEqual({ type: "ready" })
 
     const requestReceived = waitForMessage(socket)
@@ -108,34 +159,99 @@ test("serves a live client response through the stdio MCP transport", async () =
     const request = requestMessageSchema.parse(await requestReceived)
     expect(request.method).toBe("listScripts")
     socket.send(
-      JSON.stringify({
-        type: "response",
-        id: request.id,
-        ok: true,
-        result: {
-          scripts: [
-            {
-              name: "DoorManager",
-              className: "LocalScript",
-              path: 'game:GetService("Players")["Builder"]["PlayerScripts"]["DoorManager"]',
-            },
-          ],
-          total: 1,
-          returned: 1,
-          scope: "all",
-          query: "door",
-        },
-      }),
+      JSON.stringify({ type: "response", id: request.id, ok: true, result: SCRIPT_RESULT }),
     )
-
-    const parsed = z
-      .object({
-        content: z.array(z.object({ type: z.literal("text"), text: z.string() })).min(1),
-      })
-      .parse(await toolResult)
-    expect(parsed.content[0]?.text).toContain("DoorManager")
+    await expectDoorManager(toolResult)
   } finally {
     socket?.close()
     await client.close()
+  }
+})
+
+test("serves a live client response over HTTP poll", async () => {
+  const port = await getUnusedPort()
+  const { client, transport } = openStdioClient(port)
+
+  try {
+    await client.connect(transport)
+    const endpoint = `http://127.0.0.1:${port}${POLL_PATH}`
+    const hello = await fetch(endpoint, {
+      method: "POST",
+      body: JSON.stringify({ type: "hello", token: TOKEN, agent: AGENT }),
+    })
+    expect(hello.status).toBe(200)
+    expect(await hello.json()).toEqual({ type: "ready" })
+
+    const toolResult = client.callTool({
+      name: "roblox_list_scripts",
+      arguments: { query: "door", scope: "all", limit: 20 },
+    })
+    const poll = await fetch(endpoint, {
+      method: "POST",
+      body: JSON.stringify({ type: "poll", token: TOKEN }),
+    })
+    const request = requestMessageSchema.parse(await poll.json())
+    expect(request.method).toBe("listScripts")
+    const answered = await fetch(endpoint, {
+      method: "POST",
+      body: JSON.stringify({
+        type: "response",
+        token: TOKEN,
+        id: request.id,
+        ok: true,
+        result: SCRIPT_RESULT,
+      }),
+    })
+    expect(await answered.json()).toEqual({ type: "ack" })
+    await expectDoorManager(toolResult)
+  } finally {
+    await client.close()
+  }
+})
+
+test("serves a live client response over LIVE_MCP_FILEPOLL", async () => {
+  const port = await getUnusedPort()
+  const directory = await mkdtemp(join(tmpdir(), "live-mcp-filepoll-"))
+  const { client, transport } = openStdioClient(port, { LIVE_MCP_FILEPOLL: directory })
+  const toHost = join(directory, "to-host.json")
+  const toAgent = join(directory, "to-agent.json")
+
+  try {
+    await client.connect(transport)
+    await writeFile(toHost, JSON.stringify({ type: "hello", token: TOKEN, agent: AGENT }))
+    expect(
+      await waitForJsonFile(toAgent, (value) => {
+        return (
+          typeof value === "object" && value !== null && "type" in value && value.type === "ready"
+        )
+      }),
+    ).toEqual({ type: "ready" })
+
+    const toolResult = client.callTool({
+      name: "roblox_list_scripts",
+      arguments: { query: "door", scope: "all", limit: 20 },
+    })
+    const request = requestMessageSchema.parse(
+      await waitForJsonFile(toAgent, (value) => {
+        return (
+          typeof value === "object" && value !== null && "type" in value && value.type === "request"
+        )
+      }),
+    )
+    expect(request.method).toBe("listScripts")
+    await writeFile(
+      toHost,
+      JSON.stringify({
+        type: "response",
+        token: TOKEN,
+        id: request.id,
+        ok: true,
+        result: SCRIPT_RESULT,
+      }),
+    )
+    await expectDoorManager(toolResult)
+  } finally {
+    await client.close()
+    await rm(directory, { recursive: true, force: true })
   }
 })
