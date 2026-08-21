@@ -1,20 +1,9 @@
 import { z } from "zod"
 
-export const REQUEST_METHODS = [
-  "status",
-  "listTargets",
-  "listScripts",
-  "searchScripts",
-  "readScript",
-  "inspectClosure",
-  "mutateClosure",
-  "restoreMutation",
-  "eval",
-] as const
+export const REQUEST_METHODS = ["listInstances", "listScripts", "readSource", "eval"] as const
 
 export const agentInfoSchema = z.object({
   agentVersion: z.string().min(1).max(32),
-  gameId: z.number().int().nonnegative(),
   placeId: z.number().int().nonnegative(),
   jobId: z.string().max(128),
   playerName: z.string().max(64),
@@ -27,17 +16,6 @@ export const helloMessageSchema = z.object({
   type: z.literal("hello"),
   token: z.string().min(32).max(256),
   agent: agentInfoSchema,
-})
-
-export const pairRequestMessageSchema = z.object({
-  type: z.literal("pair_request"),
-  agent: agentInfoSchema,
-})
-
-export const pairDecisionMessageSchema = z.object({
-  type: z.literal("pair_decision"),
-  challengeId: z.uuid(),
-  approved: z.boolean(),
 })
 
 export const responseMessageSchema = z.discriminatedUnion("ok", [

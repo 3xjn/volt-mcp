@@ -2,25 +2,7 @@ export class BridgeUnavailableError extends Error {
   readonly name = "BridgeUnavailableError"
 
   constructor() {
-    super("No authenticated Volt client is connected")
-  }
-}
-
-export class BridgeClientSelectionError extends Error {
-  readonly name = "BridgeClientSelectionError"
-
-  constructor() {
-    super(
-      "Multiple authenticated Volt clients are connected; pass a client returned by roblox_list_clients",
-    )
-  }
-}
-
-export class BridgeClientNotFoundError extends Error {
-  readonly name = "BridgeClientNotFoundError"
-
-  constructor(readonly client: string) {
-    super(`Volt client ${client} is not connected; call roblox_list_clients for current clients`)
+    super("No authenticated live client is connected")
   }
 }
 
@@ -31,7 +13,7 @@ export class BridgeTimeoutError extends Error {
     readonly requestId: string,
     readonly timeoutMs: number,
   ) {
-    super(`Volt request ${requestId} timed out after ${timeoutMs}ms`)
+    super(`Live client request ${requestId} timed out after ${timeoutMs}ms`)
   }
 }
 
@@ -50,7 +32,7 @@ export class BridgeDisconnectedError extends Error {
   readonly name = "BridgeDisconnectedError"
 
   constructor() {
-    super("The Volt client disconnected before the request completed")
+    super("The live client disconnected before the request completed")
   }
 }
 

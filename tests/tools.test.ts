@@ -1,96 +1,97 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
-import { z } from "zod"
 import type { LiveBridge } from "../src/bridge.js"
+import type { RequestMethod } from "../src/protocol.js"
 import { createMcpServer } from "../src/tools.js"
+
+const TOOL_NAMES = [
+  "roblox_list_instances",
+  "roblox_list_scripts",
+  "roblox_read_source",
+  "roblox_eval",
+] as const
+
+type CapturedRequest = {
+  readonly method: RequestMethod
+  readonly params: Readonly<Record<string, unknown>>
+}
+
+const requests: CapturedRequest[] = []
+const openClients: Client[] = []
 
 const bridge: LiveBridge = {
   port: 0,
-  listClients() {
-    return [
-      {
-        client: "123e4567-e89b-42d3-a456-426614174000",
-        connectedAt: "2026-08-13T20:00:00.000Z",
-        agent: {
-          agentVersion: "test",
-          gameId: 42,
-          placeId: 123,
-          jobId: "job",
-          playerName: "Builder",
-          userId: 456,
-        },
-      },
-    ]
-  },
-  async request() {
-    return {}
+  async request(method, params) {
+    requests.push({ method, params })
+    return { accepted: true }
   },
   status() {
-    return { state: "unpaired", paired: false, connected: false }
-  },
-  preparePairing() {
-    return { state: "unpaired", paired: false, connected: false }
-  },
-  presentPairing() {
-    return { accepted: false, reason: "challenge_not_current" }
+    return { connected: false }
   },
   async stop() {},
 }
 
-test("advertises Roblox branding during MCP initialization", async () => {
-  // Given
+async function openClient(): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const server = createMcpServer(bridge)
-  const client = new Client({ name: "volt-mcp-tools-test", version: "0.1.0" })
-
-  // When
+  const client = new Client({ name: "live-mcp-tools-test", version: "0.1.1" })
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+  openClients.push(client)
+  return client
+}
 
-  // Then
+afterEach(async () => {
+  requests.length = 0
+  await Promise.all(openClients.splice(0).map((client) => client.close()))
+})
+
+test("advertises the four inspect tools", async () => {
+  const client = await openClient()
   expect(client.getServerVersion()).toMatchObject({
-    name: "volt-mcp",
-    title: "Volt MCP for Roblox",
-    icons: [
-      {
-        src: "https://images.rbxcdn.com/905bd722ee0a6ceda3caacde54c0b081.png",
-        mimeType: "image/png",
-        sizes: ["180x180"],
-      },
-    ],
+    name: "live-mcp",
+    version: "0.1.1",
   })
   const tools = await client.listTools()
-  expect(tools.tools.map(({ name }) => name)).toContain("roblox_list_clients")
-  const clientAddressedTools = [
-    "roblox_list_targets",
-    "roblox_list_scripts",
-    "roblox_search_scripts",
-    "roblox_read_script",
-    "roblox_inspect_closure",
-    "roblox_mutate_closure",
-    "roblox_restore_mutation",
-    "roblox_eval",
-  ]
-  for (const name of clientAddressedTools) {
-    expect(tools.tools.find((tool) => tool.name === name)?.inputSchema).toMatchObject({
-      properties: {
-        client: { type: "string", format: "uuid" },
-      },
-    })
-  }
+  expect(tools.tools.map(({ name }) => name)).toEqual([...TOOL_NAMES])
+})
 
-  const listed = z
-    .object({ content: z.array(z.object({ type: z.literal("text"), text: z.string() })).min(1) })
-    .parse(await client.callTool({ name: "roblox_list_clients", arguments: {} }))
-  const firstBlock = listed.content[0]
-  if (firstBlock === undefined) {
-    throw new Error("Expected a text result")
-  }
-  expect(JSON.parse(firstBlock.text)).toMatchObject({
-    count: 1,
-    selectionRequired: false,
-    clients: [{ client: "123e4567-e89b-42d3-a456-426614174000" }],
+test("forwards instance, script, source, and eval calls", async () => {
+  const client = await openClient()
+
+  await client.callTool({
+    name: "roblox_list_instances",
+    arguments: { path: "game", query: "Players", className: "Players", limit: 10 },
+  })
+  await client.callTool({
+    name: "roblox_list_scripts",
+    arguments: { query: "door", scope: "running", limit: 20 },
+  })
+  await client.callTool({
+    name: "roblox_read_source",
+    arguments: { path: 'game:GetService("Players")', startLine: 2, lineCount: 50 },
+  })
+  await client.callTool({
+    name: "roblox_eval",
+    arguments: { code: "return 1", chunkName: "test" },
   })
 
-  await Promise.all([client.close(), server.close()])
+  expect(requests).toEqual([
+    {
+      method: "listInstances",
+      params: { path: "game", query: "Players", className: "Players", limit: 10 },
+    },
+    {
+      method: "listScripts",
+      params: { query: "door", scope: "running", limit: 20 },
+    },
+    {
+      method: "readSource",
+      params: { path: 'game:GetService("Players")', startLine: 2, lineCount: 50 },
+    },
+    {
+      method: "eval",
+      params: { code: "return 1", chunkName: "test" },
+    },
+  ])
 })
