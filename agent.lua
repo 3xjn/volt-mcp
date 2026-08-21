@@ -30,16 +30,12 @@ end
 local compile = envFunction("loadstring") or (type(loadstring) == "function" and loadstring)
 assert(compile, "loadstring is required")
 
-local websocketConnectors = {}
-local function addConnector(connector)
-    if connector then
-        table.insert(websocketConnectors, connector)
-    end
-end
-addConnector(nestedFunction("WebSocket", "connect"))
-addConnector(nestedFunction("websocket", "connect"))
-addConnector(nestedFunction("WebSocket", "new"))
-addConnector(nestedFunction("syn", "websocket", "connect"))
+local websocketConnectors = {
+    nestedFunction("WebSocket", "connect"),
+    nestedFunction("websocket", "connect"),
+    nestedFunction("WebSocket", "new"),
+    nestedFunction("syn", "websocket", "connect"),
+}
 local httpRequest = envFunction("request")
     or nestedFunction("http", "request")
     or envFunction("http_request")
@@ -74,6 +70,16 @@ local function hasWebsocketConnector()
         end
     end
     return false
+end
+
+local function decodeJson(source)
+    if type(source) ~= "string" then
+        return nil
+    end
+    local decoded, value = pcall(HttpService.JSONDecode, HttpService, source)
+    if decoded and type(value) == "table" then
+        return value
+    end
 end
 
 if environment.LiveMcpAgent then
@@ -677,11 +683,7 @@ local function pollEndpoint()
     if endpoint:sub(1, 4) == "http" then
         return endpoint
     end
-    local http = endpoint:gsub("^ws://", "http://"):gsub("^wss://", "https://")
-    if http:sub(-5) == "/live" then
-        return http .. "/poll"
-    end
-    return http .. "/poll"
+    return (endpoint:gsub("^ws://", "http://"):gsub("^wss://", "https://")) .. "/poll"
 end
 
 local function sendJson(payload)
@@ -739,11 +741,8 @@ local function handleMessage(message, isBinary)
     if isBinary then
         return
     end
-    if type(message) ~= "string" then
-        return
-    end
-    local decoded, request = pcall(HttpService.JSONDecode, HttpService, message)
-    if decoded then
+    local request = decodeJson(message)
+    if request then
         handleRequest(request)
     end
 end
@@ -769,18 +768,7 @@ local function httpCall(payload)
     if not httpOk(response) then
         return nil
     end
-    local body = response.Body or response.body
-    if type(body) ~= "string" then
-        return nil
-    end
-    local decoded, value = pcall(HttpService.JSONDecode, HttpService, body)
-    if decoded and type(value) == "table" then
-        return value
-    end
-end
-
-local function canFilePoll()
-    return writeFile ~= nil and readFile ~= nil
+    return decodeJson(response.Body or response.body)
 end
 
 local function fileRead(path)
@@ -798,17 +786,6 @@ end
 
 local function fileWrite(path, contents)
     return pcall(writeFile, path, contents)
-end
-
-local function fileDecode(path)
-    local contents = fileRead(path)
-    if not contents then
-        return nil
-    end
-    local decoded, value = pcall(HttpService.JSONDecode, HttpService, contents)
-    if decoded and type(value) == "table" then
-        return value
-    end
 end
 
 local function attachSocket(connection)
@@ -894,7 +871,7 @@ local function runHttp()
 end
 
 local function runFile()
-    if not canFilePoll() then
+    if not writeFile or not readFile then
         return false
     end
     transportName = "file"
@@ -912,7 +889,7 @@ local function runFile()
         if contents and contents ~= lastAgent then
             lastAgent = contents
             idle = 0
-            local message = fileDecode(toAgentPath)
+            local message = decodeJson(contents)
             if message and message.type == "ready" then
                 connected = true
             elseif message and message.type == "request" then
@@ -939,11 +916,7 @@ local function connect()
             while socket and not stopped do
                 task.wait(0.2)
             end
-        elseif runHttp() then
-            -- HTTP session ended; retry the full probe order.
-        elseif runFile() then
-            -- File poll runs until stopped.
-        else
+        elseif not runHttp() and not runFile() then
             task.wait(2)
         end
     end

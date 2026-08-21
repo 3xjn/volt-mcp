@@ -10,6 +10,7 @@ function read(path: string): string {
 test("uses a generic live-client identity", () => {
   const packageJson = JSON.parse(read("package.json")) as {
     readonly name?: unknown
+    readonly description?: unknown
     readonly scripts?: Readonly<Record<string, unknown>>
   }
   const publicSurface = [
@@ -24,6 +25,7 @@ test("uses a generic live-client identity", () => {
   ].join("\n")
 
   expect(packageJson.name).toBe("@3xjn/live-mcp")
+  expect(packageJson.description).toBe("Generic stdio MCP for inspecting a live Roblox client")
   expect(packageJson.scripts).toEqual({
     start: "bun run src/index.ts",
     typecheck: "tsc --noEmit",
@@ -34,6 +36,7 @@ test("uses a generic live-client identity", () => {
   expect(publicSurface).toContain('name: "live-mcp"')
   expect(publicSurface).toContain("LIVE_MCP_TOKEN")
   expect(publicSurface).toContain("LIVE_MCP_PORT")
+  expect(publicSurface).toContain("LIVE_MCP_FILEPOLL")
   expect(publicSurface).toContain("ws://127.0.0.1:")
   expect(publicSurface).toContain("/live")
   expect(publicSurface).toContain("/live/poll")
@@ -49,6 +52,13 @@ test("uses a generic live-client identity", () => {
   expect(publicSurface).not.toContain("searchScripts")
   expect(publicSurface).not.toContain("mutationId")
   expect(publicSurface).not.toContain("roblox_list_clients")
+  expect(publicSurface).not.toContain("roblox_inspect_closure")
+  expect(publicSurface).not.toContain("volt-agent")
+  expect(publicSurface).not.toContain("inspectClosure")
+  expect(publicSurface).not.toContain("mutateClosure")
+  expect(publicSurface).not.toContain("restoreMutation")
+  expect(publicSurface).not.toContain("rankedSearch")
+  expect(publicSurface).not.toContain("code search")
 })
 
 test("keeps the client agent to a portable inspect loop", () => {
@@ -78,6 +88,10 @@ test("keeps the client agent to a portable inspect loop", () => {
   expect(source).toContain("://127.0.0.1")
   expect(source).toContain('assert(compile, "loadstring is required")')
   expect(source).toContain("identifyexecutor")
+  expect(source).toContain("/poll")
+  expect(source).toContain("to-host.json")
+  expect(source).toContain("to-agent.json")
+  expect(source).toContain('type = "poll"')
   expect(source).not.toContain("identifyexecutor()")
   expect(source).not.toContain("IsClosed")
   expect(source).not.toContain("messagebox")

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { BRIDGE_PATH, type LiveBridge, startBridge } from "../src/bridge.js"
+import { BRIDGE_PATH, type LiveBridge, POLL_PATH, startBridge } from "../src/bridge.js"
 import { BridgeTimeoutError, BridgeUnavailableError } from "../src/errors.js"
 import { type AgentInfo, requestMessageSchema, responseMessageSchema } from "../src/protocol.js"
 
@@ -237,6 +237,49 @@ describe("live bridge", () => {
         }),
       )
       await expect(pendingResult).resolves.toEqual({ scripts: [], total: 0, returned: 0 })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("returns idle on HTTP poll when no request is queued", async () => {
+    bridge = startBridge({ token: TOKEN, port: 0 })
+    const endpoint = `http://127.0.0.1:${bridge.port}${POLL_PATH}`
+    const hello = await fetch(endpoint, {
+      method: "POST",
+      body: JSON.stringify({ type: "hello", token: TOKEN, agent: AGENT }),
+    })
+    expect(await hello.json()).toEqual({ type: "ready" })
+    const poll = await fetch(endpoint, {
+      method: "POST",
+      body: JSON.stringify({ type: "poll", token: TOKEN }),
+    })
+    expect(poll.status).toBe(200)
+    expect(await poll.json()).toEqual({ type: "idle" })
+  })
+
+  test("rejects non-POST HTTP poll", async () => {
+    bridge = startBridge({ token: TOKEN, port: 0 })
+    const response = await fetch(`http://127.0.0.1:${bridge.port}${POLL_PATH}`)
+    expect(response.status).toBe(405)
+  })
+
+  test("does not accept file poll with an incorrect token", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "live-mcp-file-bad-"))
+    try {
+      bridge = startBridge({ token: TOKEN, port: 0, filePollDir: directory })
+      await writeFile(
+        join(directory, "to-host.json"),
+        JSON.stringify({
+          type: "hello",
+          token: "fedcba9876543210fedcba9876543210",
+          agent: AGENT,
+        }),
+      )
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await Bun.sleep(50)
+        expect(bridge.status()).toEqual({ connected: false })
+      }
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

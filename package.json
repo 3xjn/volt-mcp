@@ -1,6 +1,7 @@
 {
   "name": "@3xjn/live-mcp",
   "version": "0.1.1",
+  "description": "Generic stdio MCP for inspecting a live Roblox client",
   "private": true,
   "type": "module",
   "scripts": {
