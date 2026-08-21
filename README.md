@@ -1,48 +1,53 @@
-# Roblox client MCP
+# roblox-client-mcp
 
-stdio MCP plus a loopback WebSocket. An agent uses it to inspect a live Roblox
-client (not Studio): instances, scripts, source, and eval.
+stdio MCP for a live Roblox **client** (not Studio). Package
+`@3xjn/roblox-client-mcp`.
 
-Both sides share one token. Listeners bind only to `127.0.0.1`. Prefer
-`127.0.0.1` over `localhost`.
+You inspect a running client: instances, scripts, source, and eval. The
+bridge is loopback only — bind and connect on `127.0.0.1`, not
+`localhost`. Both sides share one token. The MCP owns that token: it
+creates one on first start and reuses it.
 
 ## Connect
 
-Generate a token once:
+`bun install`, start the MCP, paste the Lua it prints.
 
-```powershell
-[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLower()
+```mermaid
+flowchart TD
+  token["token"] --> listen["MCP listens on 127.0.0.1"]
+  listen --> load["load agent.lua in live client"]
+  load --> ws["WebSocket"]
+  ws -->|ok| hello["hello/auth"]
+  ws -->|fail| http["HTTP poll /live/poll"]
+  http -->|ok| hello
+  http -->|fail| file["file-poll"]
+  file --> hello
+  hello --> ready["ready"]
 ```
 
-Load `agent.lua` in the live client after setting the same token:
-
-```lua
-getgenv().RobloxClientMcp = {
-    Token = "YOUR_TOKEN",
-}
-
-loadstring(readfile("agent.lua"), "roblox-client-mcp")()
+```mermaid
+sequenceDiagram
+  participant Host as Cursor/MCP client
+  participant MCP as stdio MCP
+  participant Bridge as loopback bridge
+  participant Live as live client handler
+  Host->>MCP: tool call
+  MCP->>Bridge: request
+  Bridge->>Live: request
+  Live-->>Bridge: JSON
+  Bridge-->>MCP: JSON
+  MCP-->>Host: JSON
 ```
 
-The default URL is `ws://127.0.0.1:32145/live`. The agent probes transports in
-order:
+### 1. Install and start
 
-1. `WebSocket.connect`, then `websocket.connect`, then `WebSocket.new`, then
-   `syn.websocket.connect`. Socket surface is `OnMessage`/`OnClose` `:Connect`,
-   `Send`, and `Close`.
-2. If WS connect fails, HTTP poll `http://127.0.0.1:32145/live/poll` via
-   `request` / `http.request` / `http_request` / `syn.request`.
-3. If neither WS nor request works, file-poll `writefile`/`readfile` under
-   `roblox-client-mcp/` in the executor workspace. Point
-   `ROBLOX_CLIENT_MCP_FILEPOLL` at that directory on the host.
+```
+bun install
+bun start
+```
 
-The agent capability-detects globals. It does not branch on
-`identifyexecutor()` / `getexecutorname` names. Those are telemetry on hello
-only. `loadstring` and `getgenv` are required. `decompile` is not UNC/sUNC: it
-is pcall'd when present, then `getscriptbytecode`, then optional
-`getscriptclosure` + `debug.getconstants`.
-
-Run the MCP server with that token:
+`bun start` is `bun run src/index.ts`. Cursor can spawn it. Example
+`mcp.json` (Windows cwd):
 
 ```json
 {
@@ -50,35 +55,67 @@ Run the MCP server with that token:
     "roblox-client-mcp": {
       "command": "bun",
       "args": ["run", "src/index.ts"],
-      "cwd": "/path/to/roblox-client-mcp",
-      "env": {
-        "ROBLOX_CLIENT_MCP_TOKEN": "YOUR_TOKEN",
-        "ROBLOX_CLIENT_MCP_PORT": "32145"
-      }
+      "cwd": "C:\\Users\\you\\roblox-client-mcp"
     }
   }
 }
 ```
 
-```powershell
-bun install
+Don't also `bun start` by hand if Cursor is already spawning it, or the
+port is taken.
+
+On start, stderr prints the token, where it was stored, and the Lua to
+paste. Stdout is MCP stdio — the token never goes there. Cursor shows
+stderr in the MCP logs.
+
+`ROBLOX_CLIENT_MCP_PORT` defaults to `32145`. Optional
+`ROBLOX_CLIENT_MCP_FILEPOLL` is a host directory for the file-poll
+fallback. `ROBLOX_CLIENT_MCP_TOKEN` overrides the stored token if you set
+it.
+
+### 2. Load the agent
+
+Copy `agent.lua` into the executor workspace. Paste the printed Lua in
+the live client. It looks like:
+
+```lua
+getgenv().RobloxClientMcp = {
+    Token = "...",
+}
+
+loadstring(readfile("agent.lua"), "roblox-client-mcp")()
 ```
+
+Default URL is `ws://127.0.0.1:32145/live`. The agent capability-detects
+what the executor actually exposes. It requires `loadstring` and
+`getgenv`. It does not switch on `identifyexecutor`.
+
+It tries WebSocket first, then HTTP poll at `/live/poll`, then file-poll
+with `writefile`/`readfile` under `roblox-client-mcp/` in the executor
+workspace. If you land on file-poll, point `ROBLOX_CLIENT_MCP_FILEPOLL` at
+that directory on the host.
 
 ## Tools
 
-Each tool returns JSON text.
+Each tool returns JSON text. Tools fail if no authenticated client is
+connected.
 
 | Tool | Returns |
 | --- | --- |
-| `roblox_list_instances` | An instance plus matches (`name`, `className`, `path`, `childCount`, `isScript`). Optional `path` (default `game`), `scope` (`children` / `all` / `nil`), `query`, `className`, and `limit`. `all` uses `getinstances` plus `getnilinstances`, else `game:GetDescendants()`. |
-| `roblox_list_scripts` | Matching scripts (`name`, `className`, `path`). Optional `query`, `scope` (`all` / `running` / `loaded` / `cached`), and `limit`. Uses `getscripts` when present, else filters instances. `getrunningscripts` / `getloadedmodules` are scopes. Every getter is pcall'd. |
-| `roblox_read_source` | `{ kind, data }` where `kind` is `luau`, `bytecode`, `constants`, or `empty`. Never requires `decompile`. |
-| `roblox_eval` | JSON-safe values returned by an explicit Luau chunk. Marked destructive. |
+| `roblox_list_instances` | An instance plus matches (`name`, `className`, `path`, `childCount`, `isScript`). Optional `path` (default `game`), `scope` (`children` / `all` / `nil`), `query`, `className`, and `limit`. |
+| `roblox_list_scripts` | Matching scripts (`name`, `className`, `path`). Optional `query`, `scope` (`all` / `running` / `loaded` / `cached`), and `limit`. |
+| `roblox_read_source` | `{ kind, data }`. Tries decompile, then bytecode, then constants, else empty (`luau` / `bytecode` / `constants` / `empty`). |
+| `roblox_eval` | JSON-safe values from an explicit Luau chunk. Destructive. |
 
-If no authenticated client is connected, tools fail with that error.
+```mermaid
+flowchart LR
+  decompile["decompile"] --> bytecode["bytecode"]
+  bytecode --> constants["constants"]
+  constants --> empty["empty"]
+```
 
 ## Development
 
-```powershell
+```
 bun run check
 ```
