@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@3xjn/live-mcp",
+      "name": "@3xjn/roblox-client-mcp",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.29.0",
         "zod": "4.3.6",

@@ -35,7 +35,7 @@ const bridge: LiveBridge = {
 async function openClient(): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const server = createMcpServer(bridge)
-  const client = new Client({ name: "live-mcp-tools-test", version: "0.1.1" })
+  const client = new Client({ name: "roblox-client-mcp-tools-test", version: "0.1.1" })
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
   openClients.push(client)
   return client
@@ -49,7 +49,7 @@ afterEach(async () => {
 test("advertises the four inspect tools", async () => {
   const client = await openClient()
   expect(client.getServerVersion()).toMatchObject({
-    name: "live-mcp",
+    name: "roblox-client-mcp",
     version: "0.1.1",
   })
   const tools = await client.listTools()

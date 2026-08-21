@@ -1,7 +1,7 @@
-# Live-client MCP
+# Roblox client MCP
 
 stdio MCP plus a loopback WebSocket. An agent uses it to inspect a live Roblox
-client: instances, scripts, source, and eval.
+client (not Studio): instances, scripts, source, and eval.
 
 Both sides share one token. Listeners bind only to `127.0.0.1`. Prefer
 `127.0.0.1` over `localhost`.
@@ -17,11 +17,11 @@ Generate a token once:
 Load `agent.lua` in the live client after setting the same token:
 
 ```lua
-getgenv().LiveMcp = {
+getgenv().RobloxClientMcp = {
     Token = "YOUR_TOKEN",
 }
 
-loadstring(readfile("agent.lua"), "live-mcp")()
+loadstring(readfile("agent.lua"), "roblox-client-mcp")()
 ```
 
 The default URL is `ws://127.0.0.1:32145/live`. The agent probes transports in
@@ -33,8 +33,8 @@ order:
 2. If WS connect fails, HTTP poll `http://127.0.0.1:32145/live/poll` via
    `request` / `http.request` / `http_request` / `syn.request`.
 3. If neither WS nor request works, file-poll `writefile`/`readfile` under
-   `live-mcp/` in the executor workspace. Point `LIVE_MCP_FILEPOLL` at that
-   directory on the host.
+   `roblox-client-mcp/` in the executor workspace. Point
+   `ROBLOX_CLIENT_MCP_FILEPOLL` at that directory on the host.
 
 The agent capability-detects globals. It does not branch on
 `identifyexecutor()` / `getexecutorname` names. Those are telemetry on hello
@@ -47,13 +47,13 @@ Run the MCP server with that token:
 ```json
 {
   "mcpServers": {
-    "live-mcp": {
+    "roblox-client-mcp": {
       "command": "bun",
       "args": ["run", "src/index.ts"],
-      "cwd": "/path/to/live-mcp",
+      "cwd": "/path/to/roblox-client-mcp",
       "env": {
-        "LIVE_MCP_TOKEN": "YOUR_TOKEN",
-        "LIVE_MCP_PORT": "32145"
+        "ROBLOX_CLIENT_MCP_TOKEN": "YOUR_TOKEN",
+        "ROBLOX_CLIENT_MCP_PORT": "32145"
       }
     }
   }

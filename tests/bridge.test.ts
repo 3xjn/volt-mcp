@@ -183,7 +183,7 @@ describe("live bridge", () => {
   })
 
   test("authenticates over file poll and correlates a response", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "live-mcp-file-"))
+    const directory = await mkdtemp(join(tmpdir(), "roblox-client-mcp-file-"))
     try {
       bridge = startBridge({ token: TOKEN, port: 0, filePollDir: directory })
       await writeFile(
@@ -265,7 +265,7 @@ describe("live bridge", () => {
   })
 
   test("does not accept file poll with an incorrect token", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "live-mcp-file-bad-"))
+    const directory = await mkdtemp(join(tmpdir(), "roblox-client-mcp-file-bad-"))
     try {
       bridge = startBridge({ token: TOKEN, port: 0, filePollDir: directory })
       await writeFile(
