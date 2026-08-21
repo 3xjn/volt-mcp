@@ -5,30 +5,49 @@ stdio MCP for a live Roblox **client** (not Studio). Package
 
 You inspect a running client: instances, scripts, source, and eval. The
 bridge is loopback only — bind and connect on `127.0.0.1`, not
-`localhost`. Both sides share one token.
+`localhost`. Both sides share one token. The MCP owns that token: it
+creates one on first start and reuses it.
 
 ## Connect
 
-Three steps: token, MCP, client.
+`bun install`, start the MCP, paste the Lua it prints.
 
-### 1. Token and install
-
-```powershell
-[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLower()
+```mermaid
+flowchart TD
+  token["token"] --> listen["MCP listens on 127.0.0.1"]
+  listen --> load["load agent.lua in live client"]
+  load --> ws["WebSocket"]
+  ws -->|ok| hello["hello/auth"]
+  ws -->|fail| http["HTTP poll /live/poll"]
+  http -->|ok| hello
+  http -->|fail| file["file-poll"]
+  file --> hello
+  hello --> ready["ready"]
 ```
 
-`ROBLOX_CLIENT_MCP_TOKEN` must be at least 32 characters.
-`ROBLOX_CLIENT_MCP_PORT` defaults to `32145`. Optional
-`ROBLOX_CLIENT_MCP_FILEPOLL` is a host directory for the file-poll
-fallback.
+```mermaid
+sequenceDiagram
+  participant Host as Cursor/MCP client
+  participant MCP as stdio MCP
+  participant Bridge as loopback bridge
+  participant Live as live client handler
+  Host->>MCP: tool call
+  MCP->>Bridge: request
+  Bridge->>Live: request
+  Live-->>Bridge: JSON
+  Bridge-->>MCP: JSON
+  MCP-->>Host: JSON
+```
 
-```powershell
+### 1. Install and start
+
+```
 bun install
+bun start
 ```
 
-### 2. Start the MCP
-
-Cursor can spawn it. Example `mcp.json` (Windows cwd):
+`bun start` is `bun run src/index.ts`. Cursor can spawn it. Example
+`mcp.json` (Windows cwd):
 
 ```json
 {
@@ -36,27 +55,32 @@ Cursor can spawn it. Example `mcp.json` (Windows cwd):
     "roblox-client-mcp": {
       "command": "bun",
       "args": ["run", "src/index.ts"],
-      "cwd": "C:\\Users\\you\\roblox-client-mcp",
-      "env": {
-        "ROBLOX_CLIENT_MCP_TOKEN": "YOUR_TOKEN",
-        "ROBLOX_CLIENT_MCP_PORT": "32145"
-      }
+      "cwd": "C:\\Users\\you\\roblox-client-mcp"
     }
   }
 }
 ```
 
-Or run it yourself: `bun run src/index.ts` (`bun start` is the same). Don't
-do both, or the port is already taken.
+Don't also `bun start` by hand if Cursor is already spawning it, or the
+port is taken.
 
-### 3. Load the agent
+On start, stderr prints the token, where it was stored, and the Lua to
+paste. Stdout is MCP stdio — the token never goes there. Cursor shows
+stderr in the MCP logs.
 
-Copy `agent.lua` into the executor workspace. In the live client, set the
-same token, then load it:
+`ROBLOX_CLIENT_MCP_PORT` defaults to `32145`. Optional
+`ROBLOX_CLIENT_MCP_FILEPOLL` is a host directory for the file-poll
+fallback. `ROBLOX_CLIENT_MCP_TOKEN` overrides the stored token if you set
+it.
+
+### 2. Load the agent
+
+Copy `agent.lua` into the executor workspace. Paste the printed Lua in
+the live client. It looks like:
 
 ```lua
 getgenv().RobloxClientMcp = {
-    Token = "YOUR_TOKEN",
+    Token = "...",
 }
 
 loadstring(readfile("agent.lua"), "roblox-client-mcp")()
@@ -83,8 +107,15 @@ connected.
 | `roblox_read_source` | `{ kind, data }`. Tries decompile, then bytecode, then constants, else empty (`luau` / `bytecode` / `constants` / `empty`). |
 | `roblox_eval` | JSON-safe values from an explicit Luau chunk. Destructive. |
 
+```mermaid
+flowchart LR
+  decompile["decompile"] --> bytecode["bytecode"]
+  bytecode --> constants["constants"]
+  constants --> empty["empty"]
+```
+
 ## Development
 
-```powershell
+```
 bun run check
 ```
