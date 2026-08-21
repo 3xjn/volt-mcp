@@ -1,48 +1,34 @@
-# Roblox client MCP
+# roblox-client-mcp
 
-stdio MCP plus a loopback WebSocket. An agent uses it to inspect a live Roblox
-client (not Studio): instances, scripts, source, and eval.
+stdio MCP for a live Roblox **client** (not Studio). Package
+`@3xjn/roblox-client-mcp`.
 
-Both sides share one token. Listeners bind only to `127.0.0.1`. Prefer
-`127.0.0.1` over `localhost`.
+You inspect a running client: instances, scripts, source, and eval. The
+bridge is loopback only — bind and connect on `127.0.0.1`, not
+`localhost`. Both sides share one token.
 
 ## Connect
 
-Generate a token once:
+Three steps: token, MCP, client.
+
+### 1. Token and install
 
 ```powershell
 [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLower()
 ```
 
-Load `agent.lua` in the live client after setting the same token:
+`ROBLOX_CLIENT_MCP_TOKEN` must be at least 32 characters.
+`ROBLOX_CLIENT_MCP_PORT` defaults to `32145`. Optional
+`ROBLOX_CLIENT_MCP_FILEPOLL` is a host directory for the file-poll
+fallback.
 
-```lua
-getgenv().RobloxClientMcp = {
-    Token = "YOUR_TOKEN",
-}
-
-loadstring(readfile("agent.lua"), "roblox-client-mcp")()
+```powershell
+bun install
 ```
 
-The default URL is `ws://127.0.0.1:32145/live`. The agent probes transports in
-order:
+### 2. Start the MCP
 
-1. `WebSocket.connect`, then `websocket.connect`, then `WebSocket.new`, then
-   `syn.websocket.connect`. Socket surface is `OnMessage`/`OnClose` `:Connect`,
-   `Send`, and `Close`.
-2. If WS connect fails, HTTP poll `http://127.0.0.1:32145/live/poll` via
-   `request` / `http.request` / `http_request` / `syn.request`.
-3. If neither WS nor request works, file-poll `writefile`/`readfile` under
-   `roblox-client-mcp/` in the executor workspace. Point
-   `ROBLOX_CLIENT_MCP_FILEPOLL` at that directory on the host.
-
-The agent capability-detects globals. It does not branch on
-`identifyexecutor()` / `getexecutorname` names. Those are telemetry on hello
-only. `loadstring` and `getgenv` are required. `decompile` is not UNC/sUNC: it
-is pcall'd when present, then `getscriptbytecode`, then optional
-`getscriptclosure` + `debug.getconstants`.
-
-Run the MCP server with that token:
+Cursor can spawn it. Example `mcp.json` (Windows cwd):
 
 ```json
 {
@@ -50,7 +36,7 @@ Run the MCP server with that token:
     "roblox-client-mcp": {
       "command": "bun",
       "args": ["run", "src/index.ts"],
-      "cwd": "/path/to/roblox-client-mcp",
+      "cwd": "C:\\Users\\you\\roblox-client-mcp",
       "env": {
         "ROBLOX_CLIENT_MCP_TOKEN": "YOUR_TOKEN",
         "ROBLOX_CLIENT_MCP_PORT": "32145"
@@ -60,22 +46,42 @@ Run the MCP server with that token:
 }
 ```
 
-```powershell
-bun install
+Or run it yourself: `bun run src/index.ts` (`bun start` is the same). Don't
+do both, or the port is already taken.
+
+### 3. Load the agent
+
+Copy `agent.lua` into the executor workspace. In the live client, set the
+same token, then load it:
+
+```lua
+getgenv().RobloxClientMcp = {
+    Token = "YOUR_TOKEN",
+}
+
+loadstring(readfile("agent.lua"), "roblox-client-mcp")()
 ```
+
+Default URL is `ws://127.0.0.1:32145/live`. The agent capability-detects
+what the executor actually exposes. It requires `loadstring` and
+`getgenv`. It does not switch on `identifyexecutor`.
+
+It tries WebSocket first, then HTTP poll at `/live/poll`, then file-poll
+with `writefile`/`readfile` under `roblox-client-mcp/` in the executor
+workspace. If you land on file-poll, point `ROBLOX_CLIENT_MCP_FILEPOLL` at
+that directory on the host.
 
 ## Tools
 
-Each tool returns JSON text.
+Each tool returns JSON text. Tools fail if no authenticated client is
+connected.
 
 | Tool | Returns |
 | --- | --- |
-| `roblox_list_instances` | An instance plus matches (`name`, `className`, `path`, `childCount`, `isScript`). Optional `path` (default `game`), `scope` (`children` / `all` / `nil`), `query`, `className`, and `limit`. `all` uses `getinstances` plus `getnilinstances`, else `game:GetDescendants()`. |
-| `roblox_list_scripts` | Matching scripts (`name`, `className`, `path`). Optional `query`, `scope` (`all` / `running` / `loaded` / `cached`), and `limit`. Uses `getscripts` when present, else filters instances. `getrunningscripts` / `getloadedmodules` are scopes. Every getter is pcall'd. |
-| `roblox_read_source` | `{ kind, data }` where `kind` is `luau`, `bytecode`, `constants`, or `empty`. Never requires `decompile`. |
-| `roblox_eval` | JSON-safe values returned by an explicit Luau chunk. Marked destructive. |
-
-If no authenticated client is connected, tools fail with that error.
+| `roblox_list_instances` | An instance plus matches (`name`, `className`, `path`, `childCount`, `isScript`). Optional `path` (default `game`), `scope` (`children` / `all` / `nil`), `query`, `className`, and `limit`. |
+| `roblox_list_scripts` | Matching scripts (`name`, `className`, `path`). Optional `query`, `scope` (`all` / `running` / `loaded` / `cached`), and `limit`. |
+| `roblox_read_source` | `{ kind, data }`. Tries decompile, then bytecode, then constants, else empty (`luau` / `bytecode` / `constants` / `empty`). |
+| `roblox_eval` | JSON-safe values from an explicit Luau chunk. Destructive. |
 
 ## Development
 
