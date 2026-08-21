@@ -10,6 +10,10 @@ const instancePath = z
 
 const listInstancesInput = z.object({
   path: instancePath.default("game").describe("Parent instance to list children of"),
+  scope: z
+    .enum(["children", "all", "nil"])
+    .default("children")
+    .describe("children of path, all instances, or unparented instances"),
   query: z.string().max(200).optional().describe("Case-insensitive name/path filter"),
   className: z.string().min(1).max(100).optional().describe("Exact ClassName filter"),
   limit: z.number().int().min(1).max(1_000).default(200),
@@ -51,7 +55,8 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     "roblox_list_instances",
     {
       title: "List live Roblox instances",
-      description: "List children of a DataModel path so another tool can inspect one of them.",
+      description:
+        "List live instances. Default lists children of a DataModel path. scope=all uses getinstances (or GetDescendants). scope=nil uses getnilinstances.",
       inputSchema: listInstancesInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
@@ -59,6 +64,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
       textResult(
         await bridge.request("listInstances", {
           path: input.path,
+          scope: input.scope,
           query: input.query ?? "",
           className: input.className ?? "",
           limit: input.limit,
@@ -90,7 +96,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "Read live Roblox script source",
       description:
-        "Resolve a live LocalScript or ModuleScript path and return paged decompiler output.",
+        "Read one script path. Uses decompile when present; otherwise returns getscriptbytecode. Decompile is a vendor extra, not UNC/sUNC.",
       inputSchema: readSourceInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },

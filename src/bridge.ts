@@ -11,6 +11,8 @@ import {
   type AgentInfo,
   type AgentRequest,
   helloMessageSchema,
+  parseHttpAgentResponse,
+  pollMessageSchema,
   type RequestMethod,
   responseMessageSchema,
 } from "./protocol.js"
@@ -18,7 +20,10 @@ import {
 const AUTH_TIMEOUT_MS = 5_000
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
 const STOP_GRACE_MS = 100
+const POLL_WAIT_MS = 2_000
+const HTTP_IDLE_MS = 15_000
 export const BRIDGE_PATH = "/live"
+export const POLL_PATH = "/live/poll"
 
 type SocketData = {
   authenticated: boolean
@@ -29,6 +34,15 @@ type PendingRequest = {
   readonly reject: (reason: Error) => void
   readonly timeout: ReturnType<typeof setTimeout>
 }
+
+type PollWaiter = {
+  resolve(request: AgentRequest | undefined): void
+  timeout: ReturnType<typeof setTimeout>
+}
+
+type ActiveSession =
+  | { kind: "websocket"; socket: ServerWebSocket<SocketData>; agent: AgentInfo }
+  | { kind: "http"; agent: AgentInfo; lastSeen: number }
 
 export type BridgeStatus = {
   readonly connected: boolean
@@ -69,12 +83,17 @@ function parseJson(source: string): unknown {
   }
 }
 
+function jsonResponse(status: number, body: unknown): Response {
+  return Response.json(body, { status })
+}
+
 export function startBridge(options: BridgeOptions): LiveBridge {
   const defaultTimeoutMs = options.requestTimeoutMs ?? 30_000
   const pending = new Map<string, PendingRequest>()
   const authTimeouts = new Map<ServerWebSocket<SocketData>, ReturnType<typeof setTimeout>>()
-  let activeSocket: ServerWebSocket<SocketData> | undefined
-  let activeAgent: AgentInfo | undefined
+  const outbound: AgentRequest[] = []
+  const waiters: PollWaiter[] = []
+  let session: ActiveSession | undefined
 
   function rejectPending(error: Error): void {
     for (const request of pending.values()) {
@@ -84,11 +103,140 @@ export function startBridge(options: BridgeOptions): LiveBridge {
     pending.clear()
   }
 
+  function clearWaiters(): void {
+    outbound.length = 0
+    for (const waiter of waiters.splice(0)) {
+      waiter.resolve(undefined)
+    }
+  }
+
+  function dropSession(error = new BridgeDisconnectedError()): void {
+    const current = session
+    session = undefined
+    rejectPending(error)
+    clearWaiters()
+    if (current?.kind === "websocket") {
+      current.socket.close(1012, "Replaced by a newer live client")
+    }
+  }
+
+  function httpSessionAlive(): boolean {
+    return session?.kind === "http" && Date.now() - session.lastSeen <= HTTP_IDLE_MS
+  }
+
+  function deliverHttp(request: AgentRequest): void {
+    const waiter = waiters.shift()
+    if (waiter !== undefined) {
+      waiter.resolve(request)
+      return
+    }
+    outbound.push(request)
+  }
+
+  function takeOutbound(waitMs: number): Promise<AgentRequest | undefined> {
+    const queued = outbound.shift()
+    if (queued !== undefined) {
+      return Promise.resolve(queued)
+    }
+    return new Promise((resolve) => {
+      const waiter: PollWaiter = {
+        resolve(request) {
+          clearTimeout(waiter.timeout)
+          resolve(request)
+        },
+        timeout: setTimeout(() => {
+          const index = waiters.indexOf(waiter)
+          if (index !== -1) {
+            waiters.splice(index, 1)
+          }
+          resolve(undefined)
+        }, waitMs),
+      }
+      waiters.push(waiter)
+    })
+  }
+
+  function acceptResponse(raw: unknown): boolean {
+    const response = responseMessageSchema.safeParse(raw)
+    if (!response.success) {
+      return false
+    }
+    const request = pending.get(response.data.id)
+    if (request === undefined) {
+      return true
+    }
+    clearTimeout(request.timeout)
+    pending.delete(response.data.id)
+    if (response.data.ok) {
+      request.resolve(response.data.result)
+    } else {
+      request.reject(new AgentRequestError(response.data.id, response.data.error))
+    }
+    return true
+  }
+
+  async function handlePoll(request: Request): Promise<Response> {
+    let raw: unknown
+    try {
+      raw = await request.json()
+    } catch {
+      return jsonResponse(400, { type: "error", error: "Invalid JSON" })
+    }
+
+    const hello = helloMessageSchema.safeParse(raw)
+    if (hello.success) {
+      if (!tokenMatches(hello.data.token, options.token)) {
+        return jsonResponse(401, { type: "error", error: "Authentication failed" })
+      }
+      dropSession()
+      session = {
+        kind: "http",
+        agent: { ...hello.data.agent, transport: "http" },
+        lastSeen: Date.now(),
+      }
+      return jsonResponse(200, { type: "ready" })
+    }
+
+    const poll = pollMessageSchema.safeParse(raw)
+    if (poll.success) {
+      if (!tokenMatches(poll.data.token, options.token) || !httpSessionAlive()) {
+        return jsonResponse(401, { type: "error", error: "Authentication failed" })
+      }
+      if (session?.kind === "http") {
+        session.lastSeen = Date.now()
+      }
+      const next = await takeOutbound(POLL_WAIT_MS)
+      return next === undefined ? jsonResponse(200, { type: "idle" }) : jsonResponse(200, next)
+    }
+
+    const response = parseHttpAgentResponse(raw)
+    if (response !== undefined) {
+      if (!tokenMatches(response.token, options.token) || !httpSessionAlive()) {
+        return jsonResponse(401, { type: "error", error: "Authentication failed" })
+      }
+      if (session?.kind === "http") {
+        session.lastSeen = Date.now()
+      }
+      if (!acceptResponse(response)) {
+        return jsonResponse(400, { type: "error", error: "Invalid response" })
+      }
+      return jsonResponse(200, { type: "ack" })
+    }
+
+    return jsonResponse(400, { type: "error", error: "Unknown poll message" })
+  }
+
   const server = Bun.serve<SocketData>({
     hostname: "127.0.0.1",
     port: options.port,
     fetch(request, bunServer) {
       const url = new URL(request.url)
+      if (url.pathname === POLL_PATH) {
+        if (request.method !== "POST") {
+          return new Response("Method not allowed", { status: 405 })
+        }
+        return handlePoll(request)
+      }
       if (url.pathname !== BRIDGE_PATH) {
         return new Response("Not found", { status: 404 })
       }
@@ -124,34 +272,19 @@ export function startBridge(options: BridgeOptions): LiveBridge {
             authTimeouts.delete(socket)
           }
 
-          if (activeSocket !== undefined && activeSocket !== socket) {
-            activeSocket.close(1012, "Replaced by a newer live client")
-            rejectPending(new BridgeDisconnectedError())
-          }
-
+          dropSession()
           socket.data.authenticated = true
-          activeSocket = socket
-          activeAgent = hello.data.agent
+          session = {
+            kind: "websocket",
+            socket,
+            agent: { ...hello.data.agent, transport: "websocket" },
+          }
           socket.send(JSON.stringify({ type: "ready" }))
           return
         }
 
-        const response = responseMessageSchema.safeParse(raw)
-        if (!response.success) {
+        if (!acceptResponse(raw)) {
           socket.close(1007, "Invalid response")
-          return
-        }
-
-        const request = pending.get(response.data.id)
-        if (request === undefined) {
-          return
-        }
-        clearTimeout(request.timeout)
-        pending.delete(response.data.id)
-        if (response.data.ok) {
-          request.resolve(response.data.result)
-        } else {
-          request.reject(new AgentRequestError(response.data.id, response.data.error))
         }
       },
       close(socket) {
@@ -160,10 +293,10 @@ export function startBridge(options: BridgeOptions): LiveBridge {
           clearTimeout(authTimeout)
           authTimeouts.delete(socket)
         }
-        if (activeSocket === socket) {
-          activeSocket = undefined
-          activeAgent = undefined
+        if (session?.kind === "websocket" && session.socket === socket) {
+          session = undefined
           rejectPending(new BridgeDisconnectedError())
+          clearWaiters()
         }
       },
     },
@@ -176,32 +309,38 @@ export function startBridge(options: BridgeOptions): LiveBridge {
   return {
     port: boundPort,
     status() {
-      return activeAgent === undefined
-        ? { connected: false }
-        : { connected: true, agent: activeAgent }
+      if (session?.kind === "websocket") {
+        return { connected: true, agent: session.agent }
+      }
+      if (httpSessionAlive() && session?.kind === "http") {
+        return { connected: true, agent: session.agent }
+      }
+      return { connected: false }
     },
     async request(method, params, timeoutMs = defaultTimeoutMs) {
-      const socket = activeSocket
-      if (socket === undefined) {
+      const current = session
+      if (current === undefined || (current.kind === "http" && !httpSessionAlive())) {
         throw new BridgeUnavailableError()
       }
 
       const id = crypto.randomUUID()
-      const request: AgentRequest = { type: "request", id, method, params }
+      const agentRequest: AgentRequest = { type: "request", id, method, params }
       return await new Promise<unknown>((resolve, reject) => {
         const timeout = setTimeout(() => {
           pending.delete(id)
           reject(new BridgeTimeoutError(id, timeoutMs))
         }, timeoutMs)
         pending.set(id, { resolve, reject, timeout })
-        socket.send(JSON.stringify(request))
+        if (current.kind === "websocket") {
+          current.socket.send(JSON.stringify(agentRequest))
+        } else {
+          deliverHttp(agentRequest)
+        }
       })
     },
     async stop() {
-      rejectPending(new BridgeDisconnectedError())
+      dropSession()
       await Promise.race([server.stop(true), Bun.sleep(STOP_GRACE_MS)])
-      activeSocket = undefined
-      activeAgent = undefined
     },
   }
 }

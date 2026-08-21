@@ -83,7 +83,10 @@ describe("live bridge", () => {
     const ready = waitForMessage(socket)
     socket.send(JSON.stringify({ type: "hello", token: TOKEN, agent: AGENT }))
     expect(await ready).toEqual({ type: "ready" })
-    expect(bridge.status()).toEqual({ connected: true, agent: AGENT })
+    expect(bridge.status()).toEqual({
+      connected: true,
+      agent: { ...AGENT, transport: "websocket" },
+    })
 
     const requestReceived = waitForMessage(socket)
     const pendingResult = bridge.request("listScripts", { query: "door" })
@@ -125,5 +128,54 @@ describe("live bridge", () => {
     await Bun.sleep(20)
     expect(bridge.status()).toEqual({ connected: false })
     expect(socket.readyState).not.toBe(WebSocket.OPEN)
+  })
+
+  test("authenticates over HTTP poll and correlates a response", async () => {
+    bridge = startBridge({ token: TOKEN, port: 0 })
+    const endpoint = `http://127.0.0.1:${bridge.port}/live/poll`
+    const hello = await fetch(endpoint, {
+      method: "POST",
+      body: JSON.stringify({ type: "hello", token: TOKEN, agent: AGENT }),
+    })
+    expect(hello.status).toBe(200)
+    expect(await hello.json()).toEqual({ type: "ready" })
+    expect(bridge.status()).toMatchObject({
+      connected: true,
+      agent: { ...AGENT, transport: "http" },
+    })
+
+    const pendingResult = bridge.request("listScripts", { query: "door" })
+    const poll = await fetch(endpoint, {
+      method: "POST",
+      body: JSON.stringify({ type: "poll", token: TOKEN }),
+    })
+    const request = requestMessageSchema.parse(await poll.json())
+    expect(request.method).toBe("listScripts")
+    const answered = await fetch(endpoint, {
+      method: "POST",
+      body: JSON.stringify({
+        type: "response",
+        token: TOKEN,
+        id: request.id,
+        ok: true,
+        result: { scripts: [], total: 0, returned: 0 },
+      }),
+    })
+    expect(await answered.json()).toEqual({ type: "ack" })
+    await expect(pendingResult).resolves.toEqual({ scripts: [], total: 0, returned: 0 })
+  })
+
+  test("rejects HTTP poll with an incorrect token", async () => {
+    bridge = startBridge({ token: TOKEN, port: 0 })
+    const response = await fetch(`http://127.0.0.1:${bridge.port}/live/poll`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: "hello",
+        token: "fedcba9876543210fedcba9876543210",
+        agent: AGENT,
+      }),
+    })
+    expect(response.status).toBe(401)
+    expect(bridge.status()).toEqual({ connected: false })
   })
 })

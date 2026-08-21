@@ -79,7 +79,13 @@ test("forwards instance, script, source, and eval calls", async () => {
   expect(requests).toEqual([
     {
       method: "listInstances",
-      params: { path: "game", query: "Players", className: "Players", limit: 10 },
+      params: {
+        path: "game",
+        scope: "children",
+        query: "Players",
+        className: "Players",
+        limit: 10,
+      },
     },
     {
       method: "listScripts",

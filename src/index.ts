@@ -1,6 +1,6 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
-import { BRIDGE_PATH, startBridge } from "./bridge.js"
+import { BRIDGE_PATH, POLL_PATH, startBridge } from "./bridge.js"
 import { createMcpServer } from "./tools.js"
 
 const environmentSchema = z.object({
@@ -17,7 +17,9 @@ async function main(): Promise<void> {
   const server = createMcpServer(bridge)
   const transport = new StdioServerTransport()
 
-  console.error(`Live client bridge listening on ws://127.0.0.1:${bridge.port}${BRIDGE_PATH}`)
+  console.error(
+    `Live client bridge listening on ws://127.0.0.1:${bridge.port}${BRIDGE_PATH} (HTTP poll http://127.0.0.1:${bridge.port}${POLL_PATH})`,
+  )
   await server.connect(transport)
 }
 
