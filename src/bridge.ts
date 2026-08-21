@@ -1,24 +1,36 @@
+import { timingSafeEqual } from "node:crypto"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { join } from "node:path"
 import type { ServerWebSocket } from "bun"
 import {
   AgentRequestError,
-  BridgeClientNotFoundError,
-  BridgeClientSelectionError,
   BridgeDisconnectedError,
   BridgeStartupError,
   BridgeTimeoutError,
   BridgeUnavailableError,
 } from "./errors.js"
-import { createPairingController, type PairingSocketData } from "./pairing.js"
 import {
   type AgentInfo,
   type AgentRequest,
+  helloMessageSchema,
+  parseHttpAgentResponse,
+  pollMessageSchema,
   type RequestMethod,
   responseMessageSchema,
 } from "./protocol.js"
-import type { LocalDaemonState } from "./state.js"
 
+const AUTH_TIMEOUT_MS = 5_000
 const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
 const STOP_GRACE_MS = 100
+const POLL_WAIT_MS = 2_000
+const HTTP_IDLE_MS = 15_000
+const FILE_POLL_MS = 100
+export const BRIDGE_PATH = "/live"
+export const POLL_PATH = "/live/poll"
+
+type SocketData = {
+  authenticated: boolean
+}
 
 type PendingRequest = {
   readonly resolve: (value: unknown) => void
@@ -26,119 +38,43 @@ type PendingRequest = {
   readonly timeout: ReturnType<typeof setTimeout>
 }
 
-export type ConnectedClient = {
-  readonly client: string
-  readonly connectedAt: string
-  readonly agent: AgentInfo
+type PollWaiter = {
+  resolve(request: AgentRequest | undefined): void
+  timeout: ReturnType<typeof setTimeout>
 }
 
-type ClientConnection = {
-  readonly details: ConnectedClient
-  readonly socket: ServerWebSocket<PairingSocketData>
-  readonly pending: Map<string, PendingRequest>
+type ActiveSession =
+  | { kind: "websocket"; socket: ServerWebSocket<SocketData>; agent: AgentInfo }
+  | { kind: "http"; agent: AgentInfo; lastSeen: number }
+  | { kind: "file"; agent: AgentInfo; lastSeen: number }
+
+export type BridgeStatus = {
+  readonly connected: boolean
+  readonly agent?: AgentInfo
 }
-
-export type BridgeStatus =
-  | {
-      readonly state: "unpaired"
-      readonly paired: false
-      readonly connected: false
-    }
-  | {
-      readonly state: "ready_to_pair"
-      readonly paired: false
-      readonly connected: false
-      readonly pendingRobloxSession: AgentInfo
-    }
-  | {
-      readonly state: "challenge_ready" | "awaiting_user_approval"
-      readonly paired: false
-      readonly connected: false
-      readonly challenge: PairingChallengeView
-    }
-  | {
-      readonly state: "pairing_declined" | "pairing_expired"
-      readonly paired: false
-      readonly connected: false
-      readonly pendingRobloxSession: AgentInfo
-      readonly retryable: true
-    }
-  | { readonly state: "waiting_for_roblox"; readonly paired: true; readonly connected: false }
-  | {
-      readonly state: "connected"
-      readonly paired: true
-      readonly connected: true
-      readonly agent: AgentInfo
-    }
-  | {
-      readonly state: "connected"
-      readonly paired: true
-      readonly connected: true
-      readonly clients: readonly ConnectedClient[]
-    }
-
-export type PairingChallengeView = {
-  readonly challengeId: string
-  readonly verificationCode: string
-  readonly expiresAt: string
-  readonly approvalState: "ready_to_present" | "awaiting_user_approval"
-  readonly pendingRobloxSession: AgentInfo
-  readonly daemon: {
-    readonly name: "Volt MCP"
-    readonly identity: "local_volt_mcp_daemon"
-    readonly endpoint: string
-  }
-  readonly authorization: {
-    readonly codePurpose: "correlation_only"
-    readonly approvalAuthority: "volt_messagebox_yes"
-    readonly persistence: "until_pairing_reset"
-    readonly credentialStoredOnApproval: true
-    readonly credentialStoredOnDecline: false
-    readonly scope: {
-      readonly inspectLiveScripts: true
-      readonly inspectRuntimeState: true
-      readonly executeClientLuau: true
-      readonly modifyClientLuau: true
-    }
-  }
-  readonly nextAction: string
-}
-
-export type PairingPresentationResult =
-  | {
-      readonly accepted: true
-      readonly state: "awaiting_user_approval"
-      readonly paired: false
-      readonly connected: false
-      readonly challenge: PairingChallengeView
-    }
-  | {
-      readonly accepted: false
-      readonly reason: "challenge_not_current" | "challenge_expired"
-    }
 
 export interface LiveBridge {
   readonly port: number
-  listClients(): readonly ConnectedClient[]
   request(
     method: RequestMethod,
     params: Readonly<Record<string, unknown>>,
     timeoutMs?: number,
-    client?: string,
   ): Promise<unknown>
   status(): BridgeStatus
-  preparePairing(): BridgeStatus
-  presentPairing(challengeId: string): PairingPresentationResult
   stop(): Promise<void>
 }
 
 export type BridgeOptions = {
-  readonly state: LocalDaemonState
+  readonly token: string
   readonly port: number
   readonly requestTimeoutMs?: number
-  readonly pairingTimeoutMs?: number
-  readonly verificationCode?: () => string
-  readonly agentToken?: () => string
+  readonly filePollDir?: string
+}
+
+function tokenMatches(actual: string, expected: string): boolean {
+  const actualBytes = Buffer.from(actual)
+  const expectedBytes = Buffer.from(expected)
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes)
 }
 
 function parseJson(source: string): unknown {
@@ -152,100 +88,285 @@ function parseJson(source: string): unknown {
   }
 }
 
+function jsonResponse(status: number, body: unknown): Response {
+  return Response.json(body, { status })
+}
+
 export function startBridge(options: BridgeOptions): LiveBridge {
   const defaultTimeoutMs = options.requestTimeoutMs ?? 30_000
-  const pairing = createPairingController(options)
-  const clientsById = new Map<string, ClientConnection>()
-  const clientsBySocket = new Map<ServerWebSocket<PairingSocketData>, ClientConnection>()
+  const pending = new Map<string, PendingRequest>()
+  const authTimeouts = new Map<ServerWebSocket<SocketData>, ReturnType<typeof setTimeout>>()
+  const outbound: AgentRequest[] = []
+  const waiters: PollWaiter[] = []
+  let session: ActiveSession | undefined
+  let lastFilePayload = ""
+  let fileTimer: ReturnType<typeof setInterval> | undefined
 
-  function rejectPending(connection: ClientConnection, error: Error): void {
-    for (const request of connection.pending.values()) {
+  function rejectPending(error: Error): void {
+    for (const request of pending.values()) {
       clearTimeout(request.timeout)
       request.reject(error)
     }
-    connection.pending.clear()
+    pending.clear()
   }
 
-  function disconnectClient(
-    socket: ServerWebSocket<PairingSocketData>,
-    error = new BridgeDisconnectedError(),
-  ): void {
-    const connection = clientsBySocket.get(socket)
-    if (connection === undefined) {
+  function clearWaiters(): void {
+    outbound.length = 0
+    for (const waiter of waiters.splice(0)) {
+      waiter.resolve(undefined)
+    }
+  }
+
+  function dropSession(error = new BridgeDisconnectedError()): void {
+    const current = session
+    session = undefined
+    rejectPending(error)
+    clearWaiters()
+    if (current?.kind === "websocket") {
+      current.socket.close(1012, "Replaced by a newer live client")
+    }
+  }
+
+  function pollSessionAlive(kind: "http" | "file"): boolean {
+    return session?.kind === kind && Date.now() - session.lastSeen <= HTTP_IDLE_MS
+  }
+
+  function deliverHttp(request: AgentRequest): void {
+    const waiter = waiters.shift()
+    if (waiter !== undefined) {
+      waiter.resolve(request)
       return
     }
-    clientsBySocket.delete(socket)
-    clientsById.delete(connection.details.client)
-    rejectPending(connection, error)
+    outbound.push(request)
   }
 
-  function authenticate(socket: ServerWebSocket<PairingSocketData>, agent: AgentInfo): void {
-    if (!clientsBySocket.has(socket)) {
-      const details: ConnectedClient = {
-        client: crypto.randomUUID(),
-        connectedAt: new Date().toISOString(),
-        agent,
-      }
-      const connection: ClientConnection = { details, socket, pending: new Map() }
-      clientsById.set(details.client, connection)
-      clientsBySocket.set(socket, connection)
+  function takeOutbound(waitMs: number): Promise<AgentRequest | undefined> {
+    const queued = outbound.shift()
+    if (queued !== undefined) {
+      return Promise.resolve(queued)
     }
-    socket.send(JSON.stringify({ type: "ready" }))
+    return new Promise((resolve) => {
+      const waiter: PollWaiter = {
+        resolve(request) {
+          clearTimeout(waiter.timeout)
+          resolve(request)
+        },
+        timeout: setTimeout(() => {
+          const index = waiters.indexOf(waiter)
+          if (index !== -1) {
+            waiters.splice(index, 1)
+          }
+          resolve(undefined)
+        }, waitMs),
+      }
+      waiters.push(waiter)
+    })
   }
 
-  const server = Bun.serve<PairingSocketData>({
+  function acceptResponse(raw: unknown): boolean {
+    const response = responseMessageSchema.safeParse(raw)
+    if (!response.success) {
+      return false
+    }
+    const request = pending.get(response.data.id)
+    if (request === undefined) {
+      return true
+    }
+    clearTimeout(request.timeout)
+    pending.delete(response.data.id)
+    if (response.data.ok) {
+      request.resolve(response.data.result)
+    } else {
+      request.reject(new AgentRequestError(response.data.id, response.data.error))
+    }
+    return true
+  }
+
+  async function writeAgentFile(body: unknown): Promise<void> {
+    const directory = options.filePollDir
+    if (directory === undefined) {
+      return
+    }
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, "to-agent.json"), `${JSON.stringify(body)}\n`, "utf8")
+  }
+
+  async function handlePoll(request: Request): Promise<Response> {
+    let raw: unknown
+    try {
+      raw = await request.json()
+    } catch {
+      return jsonResponse(400, { type: "error", error: "Invalid JSON" })
+    }
+
+    const hello = helloMessageSchema.safeParse(raw)
+    if (hello.success) {
+      if (!tokenMatches(hello.data.token, options.token)) {
+        return jsonResponse(401, { type: "error", error: "Authentication failed" })
+      }
+      dropSession()
+      session = {
+        kind: "http",
+        agent: { ...hello.data.agent, transport: "http" },
+        lastSeen: Date.now(),
+      }
+      return jsonResponse(200, { type: "ready" })
+    }
+
+    const poll = pollMessageSchema.safeParse(raw)
+    if (poll.success) {
+      if (!tokenMatches(poll.data.token, options.token) || !pollSessionAlive("http")) {
+        return jsonResponse(401, { type: "error", error: "Authentication failed" })
+      }
+      if (session?.kind === "http") {
+        session.lastSeen = Date.now()
+      }
+      const next = await takeOutbound(POLL_WAIT_MS)
+      return next === undefined ? jsonResponse(200, { type: "idle" }) : jsonResponse(200, next)
+    }
+
+    const response = parseHttpAgentResponse(raw)
+    if (response !== undefined) {
+      if (!tokenMatches(response.token, options.token) || !pollSessionAlive("http")) {
+        return jsonResponse(401, { type: "error", error: "Authentication failed" })
+      }
+      if (session?.kind === "http") {
+        session.lastSeen = Date.now()
+      }
+      if (!acceptResponse(response)) {
+        return jsonResponse(400, { type: "error", error: "Invalid response" })
+      }
+      return jsonResponse(200, { type: "ack" })
+    }
+
+    return jsonResponse(400, { type: "error", error: "Unknown poll message" })
+  }
+
+  async function handleFilePayload(raw: unknown): Promise<void> {
+    const hello = helloMessageSchema.safeParse(raw)
+    if (hello.success) {
+      if (!tokenMatches(hello.data.token, options.token)) {
+        return
+      }
+      dropSession()
+      session = {
+        kind: "file",
+        agent: { ...hello.data.agent, transport: "file" },
+        lastSeen: Date.now(),
+      }
+      await writeAgentFile({ type: "ready" })
+      return
+    }
+
+    const response = parseHttpAgentResponse(raw)
+    if (response === undefined || !tokenMatches(response.token, options.token)) {
+      return
+    }
+    if (!pollSessionAlive("file") && session?.kind !== "file") {
+      return
+    }
+    if (session?.kind === "file") {
+      session.lastSeen = Date.now()
+    }
+    acceptResponse(response)
+  }
+
+  if (options.filePollDir !== undefined) {
+    const directory = options.filePollDir
+    const toHost = join(directory, "to-host.json")
+    void mkdir(directory, { recursive: true })
+    fileTimer = setInterval(() => {
+      void (async () => {
+        let contents: string
+        try {
+          contents = await readFile(toHost, "utf8")
+        } catch {
+          return
+        }
+        if (contents === lastFilePayload) {
+          return
+        }
+        lastFilePayload = contents
+        const parsed = parseJson(contents)
+        if (parsed !== null) {
+          await handleFilePayload(parsed)
+        }
+      })()
+    }, FILE_POLL_MS)
+  }
+
+  const server = Bun.serve<SocketData>({
     hostname: "127.0.0.1",
     port: options.port,
     fetch(request, bunServer) {
-      if (new URL(request.url).pathname !== "/volt") {
+      const url = new URL(request.url)
+      if (url.pathname === POLL_PATH) {
+        if (request.method !== "POST") {
+          return new Response("Method not allowed", { status: 405 })
+        }
+        return handlePoll(request)
+      }
+      if (url.pathname !== BRIDGE_PATH) {
         return new Response("Not found", { status: 404 })
       }
-      const upgraded = bunServer.upgrade(request, {
-        data: { authenticated: false, pairing: undefined },
-      })
+      const upgraded = bunServer.upgrade(request, { data: { authenticated: false } })
       return upgraded ? undefined : new Response("WebSocket upgrade required", { status: 426 })
     },
     websocket: {
       idleTimeout: 0,
       maxPayloadLength: MAX_PAYLOAD_BYTES,
-      open: pairing.open,
-      async message(socket, message) {
+      open(socket) {
+        const timeout = setTimeout(() => {
+          socket.close(1008, "Authentication timed out")
+        }, AUTH_TIMEOUT_MS)
+        authTimeouts.set(socket, timeout)
+      },
+      message(socket, message) {
         if (typeof message !== "string") {
-          disconnectClient(socket)
           socket.close(1003, "Text frames only")
           return
         }
+
         const raw = parseJson(message)
         if (!socket.data.authenticated) {
-          await pairing.handle(socket, raw, (agent) => authenticate(socket, agent))
+          const hello = helloMessageSchema.safeParse(raw)
+          if (!hello.success || !tokenMatches(hello.data.token, options.token)) {
+            socket.close(1008, "Authentication failed")
+            return
+          }
+
+          const authTimeout = authTimeouts.get(socket)
+          if (authTimeout !== undefined) {
+            clearTimeout(authTimeout)
+            authTimeouts.delete(socket)
+          }
+
+          dropSession()
+          socket.data.authenticated = true
+          session = {
+            kind: "websocket",
+            socket,
+            agent: { ...hello.data.agent, transport: "websocket" },
+          }
+          socket.send(JSON.stringify({ type: "ready" }))
           return
         }
-        const response = responseMessageSchema.safeParse(raw)
-        if (!response.success) {
-          disconnectClient(socket)
+
+        if (!acceptResponse(raw)) {
           socket.close(1007, "Invalid response")
-          return
-        }
-        const connection = clientsBySocket.get(socket)
-        if (connection === undefined) {
-          socket.close(1008, "Client session unavailable")
-          return
-        }
-        const request = connection.pending.get(response.data.id)
-        if (request === undefined) {
-          return
-        }
-        clearTimeout(request.timeout)
-        connection.pending.delete(response.data.id)
-        if (response.data.ok) {
-          request.resolve(response.data.result)
-        } else {
-          request.reject(new AgentRequestError(response.data.id, response.data.error))
         }
       },
       close(socket) {
-        pairing.close(socket)
-        disconnectClient(socket)
+        const authTimeout = authTimeouts.get(socket)
+        if (authTimeout !== undefined) {
+          clearTimeout(authTimeout)
+          authTimeouts.delete(socket)
+        }
+        if (session?.kind === "websocket" && session.socket === socket) {
+          session = undefined
+          rejectPending(new BridgeDisconnectedError())
+          clearWaiters()
+        }
       },
     },
   })
@@ -253,154 +374,55 @@ export function startBridge(options: BridgeOptions): LiveBridge {
   if (boundPort === undefined) {
     throw new BridgeStartupError("Bun did not report the live bridge port")
   }
-  const daemonEndpoint = `ws://127.0.0.1:${boundPort}/volt`
-
-  function challengeView(
-    challenge: NonNullable<ReturnType<typeof pairing.snapshot>["challenge"]>,
-  ): PairingChallengeView {
-    const awaitingApproval = challenge.approvalState === "awaiting_user_approval"
-    return {
-      challengeId: challenge.challengeId,
-      verificationCode: challenge.verificationCode,
-      expiresAt: challenge.expiresAt,
-      approvalState: challenge.approvalState,
-      pendingRobloxSession: challenge.agent,
-      daemon: {
-        name: "Volt MCP",
-        identity: "local_volt_mcp_daemon",
-        endpoint: daemonEndpoint,
-      },
-      authorization: {
-        codePurpose: "correlation_only",
-        approvalAuthority: "volt_messagebox_yes",
-        persistence: "until_pairing_reset",
-        credentialStoredOnApproval: true,
-        credentialStoredOnDecline: false,
-        scope: {
-          inspectLiveScripts: true,
-          inspectRuntimeState: true,
-          executeClientLuau: true,
-          modifyClientLuau: true,
-        },
-      },
-      nextAction: awaitingApproval
-        ? "Compare this code with the Windows “Volt MCP Pairing” dialog. Choose Yes only when they match; choose No on any mismatch. The code only correlates the two pending surfaces and is not authorization or a credential."
-        : "Surface this code to the user, compare it with the Windows “Volt MCP Pairing” dialog, then call roblox_present_pairing with this challengeId. The code only correlates the two pending surfaces and is not authorization or a credential.",
-    }
-  }
-
-  function listClients(): readonly ConnectedClient[] {
-    return Array.from(clientsById.values(), ({ details }) => details)
-  }
-
-  function selectClient(client?: string): ClientConnection {
-    if (client !== undefined) {
-      const selected = clientsById.get(client)
-      if (selected === undefined) {
-        throw new BridgeClientNotFoundError(client)
-      }
-      return selected
-    }
-    const clients = Array.from(clientsById.values())
-    const selected = clients[0]
-    if (selected === undefined) {
-      throw new BridgeUnavailableError()
-    }
-    if (clients.length > 1) {
-      throw new BridgeClientSelectionError()
-    }
-    return selected
-  }
-
-  function status(): BridgeStatus {
-    const clients = listClients()
-    const onlyClient = clients[0]
-    if (onlyClient !== undefined && clients.length === 1) {
-      return { state: "connected", paired: true, connected: true, agent: onlyClient.agent }
-    }
-    if (clients.length > 1) {
-      return { state: "connected", paired: true, connected: true, clients }
-    }
-    if (options.state.hasAgentCredential()) {
-      return { state: "waiting_for_roblox", paired: true, connected: false }
-    }
-    const snapshot = pairing.snapshot()
-    if (snapshot.challenge !== undefined) {
-      return {
-        state:
-          snapshot.challenge.approvalState === "awaiting_user_approval"
-            ? "awaiting_user_approval"
-            : "challenge_ready",
-        paired: false,
-        connected: false,
-        challenge: challengeView(snapshot.challenge),
-      }
-    }
-    if (snapshot.outcome !== undefined) {
-      return {
-        state: snapshot.outcome.state === "declined" ? "pairing_declined" : "pairing_expired",
-        paired: false,
-        connected: false,
-        pendingRobloxSession: snapshot.outcome.agent,
-        retryable: true,
-      }
-    }
-    return snapshot.pendingAgent === undefined
-      ? { state: "unpaired", paired: false, connected: false }
-      : {
-          state: "ready_to_pair",
-          paired: false,
-          connected: false,
-          pendingRobloxSession: snapshot.pendingAgent,
-        }
-  }
 
   return {
     port: boundPort,
-    listClients,
-    status,
-    preparePairing() {
-      pairing.prepare()
-      return status()
+    status() {
+      if (session?.kind === "websocket") {
+        return { connected: true, agent: session.agent }
+      }
+      if (pollSessionAlive("http") && session?.kind === "http") {
+        return { connected: true, agent: session.agent }
+      }
+      if (pollSessionAlive("file") && session?.kind === "file") {
+        return { connected: true, agent: session.agent }
+      }
+      return { connected: false }
     },
-    presentPairing(challengeId) {
-      const presentation = pairing.present(challengeId, daemonEndpoint)
-      if (!presentation.accepted) {
-        return presentation
+    async request(method, params, timeoutMs = defaultTimeoutMs) {
+      const current = session
+      if (
+        current === undefined ||
+        (current.kind === "http" && !pollSessionAlive("http")) ||
+        (current.kind === "file" && !pollSessionAlive("file"))
+      ) {
+        throw new BridgeUnavailableError()
       }
-      const presentedStatus = status()
-      if (presentedStatus.state !== "awaiting_user_approval") {
-        return { accepted: false, reason: "challenge_not_current" }
-      }
-      return {
-        accepted: true,
-        state: "awaiting_user_approval",
-        paired: false,
-        connected: false,
-        challenge: presentedStatus.challenge,
-      }
-    },
-    async request(method, params, timeoutMs = defaultTimeoutMs, client) {
-      const connection = selectClient(client)
+
       const id = crypto.randomUUID()
-      const request: AgentRequest = { type: "request", id, method, params }
+      const agentRequest: AgentRequest = { type: "request", id, method, params }
       return await new Promise<unknown>((resolve, reject) => {
         const timeout = setTimeout(() => {
-          connection.pending.delete(id)
+          pending.delete(id)
           reject(new BridgeTimeoutError(id, timeoutMs))
         }, timeoutMs)
-        connection.pending.set(id, { resolve, reject, timeout })
-        connection.socket.send(JSON.stringify(request))
+        pending.set(id, { resolve, reject, timeout })
+        if (current.kind === "websocket") {
+          current.socket.send(JSON.stringify(agentRequest))
+        } else if (current.kind === "http") {
+          deliverHttp(agentRequest)
+        } else {
+          void writeAgentFile(agentRequest)
+        }
       })
     },
     async stop() {
-      for (const connection of clientsById.values()) {
-        rejectPending(connection, new BridgeDisconnectedError())
+      if (fileTimer !== undefined) {
+        clearInterval(fileTimer)
+        fileTimer = undefined
       }
-      pairing.stop()
+      dropSession()
       await Promise.race([server.stop(true), Bun.sleep(STOP_GRACE_MS)])
-      clientsById.clear()
-      clientsBySocket.clear()
     },
   }
 }

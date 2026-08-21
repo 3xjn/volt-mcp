@@ -1,36 +1,30 @@
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
-import { startVoltMcpDaemon } from "./daemon.js"
-import { defaultStatePath, loadDaemonState } from "./state.js"
+import { BRIDGE_PATH, POLL_PATH, startBridge } from "./bridge.js"
+import { createMcpServer } from "./tools.js"
 
 const environmentSchema = z.object({
-  VOLT_MCP_VOLT_PORT: z.coerce.number().int().min(1_024).max(65_535).default(32_145),
-  VOLT_MCP_HTTP_PORT: z.coerce.number().int().min(1_024).max(65_535).default(32_146),
+  LIVE_MCP_TOKEN: z.string().min(32).max(256),
+  LIVE_MCP_PORT: z.coerce.number().int().min(1_024).max(65_535).default(32_145),
+  LIVE_MCP_FILEPOLL: z.string().min(1).optional(),
 })
 
 async function main(): Promise<void> {
   const environment = environmentSchema.parse(process.env)
-  const statePath = defaultStatePath()
-  const state = await loadDaemonState(statePath)
-  const daemon = await startVoltMcpDaemon({
-    state,
-    voltPort: environment.VOLT_MCP_VOLT_PORT,
-    mcpPort: environment.VOLT_MCP_HTTP_PORT,
+  const bridge = startBridge({
+    token: environment.LIVE_MCP_TOKEN,
+    port: environment.LIVE_MCP_PORT,
+    ...(environment.LIVE_MCP_FILEPOLL === undefined
+      ? {}
+      : { filePollDir: environment.LIVE_MCP_FILEPOLL }),
   })
+  const server = createMcpServer(bridge)
+  const transport = new StdioServerTransport()
 
-  console.error(`Volt agent bridge listening on ws://127.0.0.1:${daemon.voltPort}/volt`)
-  console.error(`Volt MCP listening on http://127.0.0.1:${daemon.mcpPort}/mcp`)
-  console.error(`Volt MCP state loaded from ${statePath}`)
-
-  let stopping = false
-  async function stop(): Promise<void> {
-    if (stopping) {
-      return
-    }
-    stopping = true
-    await daemon.stop()
-  }
-  process.once("SIGINT", () => void stop())
-  process.once("SIGTERM", () => void stop())
+  console.error(
+    `Live client bridge listening on ws://127.0.0.1:${bridge.port}${BRIDGE_PATH} (HTTP poll http://127.0.0.1:${bridge.port}${POLL_PATH})`,
+  )
+  await server.connect(transport)
 }
 
 try {

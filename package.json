@@ -1,5 +1,5 @@
 {
-  "name": "@3xjn/volt-mcp",
+  "name": "@3xjn/live-mcp",
   "version": "0.1.1",
   "private": true,
   "type": "module",
@@ -8,10 +8,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
-    "smoke": "bun run scripts/smoke.ts",
-    "evaluate:search": "bun run scripts/evaluate-search.ts",
-    "test:agent": "lune run tests/agent-syntax-contracts.luau",
-    "check": "bun run typecheck && bun run lint && bun test && bun run test:agent"
+    "check": "bun run typecheck && bun run lint && bun test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

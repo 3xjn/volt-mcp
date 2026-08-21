@@ -1,24 +1,21 @@
 import { z } from "zod"
 
-export const REQUEST_METHODS = [
-  "status",
-  "listTargets",
-  "listScripts",
-  "searchScripts",
-  "readScript",
-  "inspectClosure",
-  "mutateClosure",
-  "restoreMutation",
-  "eval",
-] as const
+export const REQUEST_METHODS = ["listInstances", "listScripts", "readSource", "eval"] as const
 
 export const agentInfoSchema = z.object({
   agentVersion: z.string().min(1).max(32),
-  gameId: z.number().int().nonnegative(),
   placeId: z.number().int().nonnegative(),
   jobId: z.string().max(128),
   playerName: z.string().max(64),
   userId: z.number().int().nonnegative(),
+  transport: z.enum(["websocket", "http", "file"]).optional(),
+  executor: z
+    .object({
+      name: z.string().max(64).optional(),
+      version: z.string().max(64).optional(),
+    })
+    .optional(),
+  capabilities: z.record(z.string(), z.boolean()).optional(),
 })
 
 export type AgentInfo = z.infer<typeof agentInfoSchema>
@@ -29,15 +26,9 @@ export const helloMessageSchema = z.object({
   agent: agentInfoSchema,
 })
 
-export const pairRequestMessageSchema = z.object({
-  type: z.literal("pair_request"),
-  agent: agentInfoSchema,
-})
-
-export const pairDecisionMessageSchema = z.object({
-  type: z.literal("pair_decision"),
-  challengeId: z.uuid(),
-  approved: z.boolean(),
+export const pollMessageSchema = z.object({
+  type: z.literal("poll"),
+  token: z.string().min(32).max(256),
 })
 
 export const responseMessageSchema = z.discriminatedUnion("ok", [
@@ -66,3 +57,16 @@ export const requestMessageSchema = z.object({
 
 export type AgentRequest = z.infer<typeof requestMessageSchema>
 export type AgentResponse = z.infer<typeof responseMessageSchema>
+export type HttpAgentResponse = AgentResponse & { readonly token: string }
+
+export function parseHttpAgentResponse(raw: unknown): HttpAgentResponse | undefined {
+  if (typeof raw !== "object" || raw === null || !("token" in raw)) {
+    return undefined
+  }
+  const token = raw.token
+  if (typeof token !== "string" || token.length < 32 || token.length > 256) {
+    return undefined
+  }
+  const parsed = responseMessageSchema.safeParse(raw)
+  return parsed.success ? { ...parsed.data, token } : undefined
+}

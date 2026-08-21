@@ -1,16 +1,43 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { LiveBridge } from "./bridge.js"
-import {
-  clientInput,
-  evalInput,
-  inspectClosureInput,
-  listScriptsInput,
-  mutateClosureInput,
-  readScriptInput,
-  restoreMutationInput,
-  searchScriptsInput,
-} from "./tool-inputs.js"
+
+const instancePath = z
+  .string()
+  .min(1)
+  .max(4_096)
+  .describe('Canonical instance path beginning with "game" or "workspace"')
+
+const listInstancesInput = z.object({
+  path: instancePath.default("game").describe("Parent instance to list children of"),
+  scope: z
+    .enum(["children", "all", "nil"])
+    .default("children")
+    .describe("children of path, all instances, or unparented instances"),
+  query: z.string().max(200).optional().describe("Case-insensitive name/path filter"),
+  className: z.string().min(1).max(100).optional().describe("Exact ClassName filter"),
+  limit: z.number().int().min(1).max(1_000).default(200),
+})
+
+const listScriptsInput = z.object({
+  query: z.string().max(200).optional().describe("Case-insensitive path/name filter"),
+  scope: z
+    .enum(["all", "running", "loaded", "cached"])
+    .default("all")
+    .describe("Which live-client script inventory to inspect"),
+  limit: z.number().int().min(1).max(1_000).default(200),
+})
+
+const readSourceInput = z.object({
+  path: instancePath,
+  startLine: z.number().int().min(1).default(1),
+  lineCount: z.number().int().min(1).max(5_000).default(1_000),
+})
+
+const evalInput = z.object({
+  code: z.string().min(1).max(100_000).describe("Luau chunk to execute in the live client"),
+  chunkName: z.string().min(1).max(100).default("live-mcp"),
+})
 
 function textResult(value: unknown) {
   return {
@@ -20,84 +47,29 @@ function textResult(value: unknown) {
 
 export function createMcpServer(bridge: LiveBridge): McpServer {
   const server = new McpServer({
-    name: "volt-mcp",
+    name: "live-mcp",
     version: "0.1.1",
-    title: "Volt MCP for Roblox",
-    icons: [
-      {
-        src: "https://images.rbxcdn.com/905bd722ee0a6ceda3caacde54c0b081.png",
-        mimeType: "image/png",
-        sizes: ["180x180"],
-      },
-    ],
   })
 
   server.registerTool(
-    "roblox_status",
+    "roblox_list_instances",
     {
-      title: "Roblox live-client status",
+      title: "List live Roblox instances",
       description:
-        "Report Roblox registration, pairing, approval, waiting, and connected states. A live challenge includes its short-lived correlation code, expiry, Roblox session, daemon identity, scope, persistence, and next action. The code correlates MCP and Volt dialog surfaces; it is not authorization or a credential.",
-      inputSchema: {},
+        "List live instances. Default lists children of a DataModel path. scope=all uses getinstances plus getnilinstances, else GetDescendants. scope=nil uses getnilinstances.",
+      inputSchema: listInstancesInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
-    async () => textResult(bridge.status()),
-  )
-
-  server.registerTool(
-    "roblox_list_clients",
-    {
-      title: "List connected Roblox clients",
-      description:
-        "List authenticated Volt client sessions and their Roblox job/player metadata. Pass a returned client ID to other Roblox tools when several clients are connected.",
-      inputSchema: {},
-      annotations: { readOnlyHint: true, idempotentHint: true },
-    },
-    async () => {
-      const clients = bridge.listClients()
-      return textResult({
-        clients,
-        count: clients.length,
-        selectionRequired: clients.length > 1,
-      })
-    },
-  )
-
-  server.registerTool(
-    "roblox_prepare_pairing",
-    {
-      title: "Prepare Roblox pairing",
-      description:
-        "Create and immediately return a short-lived pairing challenge for the registered Roblox session without displaying a dialog. This replaces any prior challenge. Surface its correlation code to the user before presenting it.",
-      inputSchema: {},
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    },
-    async () => textResult(bridge.preparePairing()),
-  )
-
-  server.registerTool(
-    "roblox_present_pairing",
-    {
-      title: "Present Roblox pairing approval",
-      description:
-        "Present the current prepared challenge in Volt's Windows Yes/No dialog. Call only after the MCP client has shown the matching correlation code. Wrong, replaced, or expired challenge IDs are rejected.",
-      inputSchema: {
-        challengeId: z.uuid().describe("Current challengeId returned by roblox_prepare_pairing"),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-    },
-    async ({ challengeId }) => textResult(bridge.presentPairing(challengeId)),
-  )
-
-  server.registerTool(
-    "roblox_list_targets",
-    {
-      title: "List Roblox Lua-state targets",
-      description: "List the default game Lua state plus active Actor and LuaStateProxy selectors.",
-      inputSchema: { client: clientInput },
-      annotations: { readOnlyHint: true, idempotentHint: true },
-    },
-    async ({ client }) => textResult(await bridge.request("listTargets", {}, undefined, client)),
+    async (input) =>
+      textResult(
+        await bridge.request("listInstances", {
+          path: input.path,
+          scope: input.scope,
+          query: input.query ?? "",
+          className: input.className ?? "",
+          limit: input.limit,
+        }),
+      ),
   )
 
   server.registerTool(
@@ -105,162 +77,39 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "List live Roblox scripts",
       description:
-        "List client-visible scripts from the live game so another tool can read one by path. Inactive scripts under other players are excluded unless explicitly requested.",
+        "List client-visible scripts. Uses getscripts when present, else filters instances. getrunningscripts / getloadedmodules are scopes. Every getter is pcall'd.",
       inputSchema: listScriptsInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (input) =>
       textResult(
-        await bridge.request(
-          "listScripts",
-          {
-            query: input.query ?? "",
-            scope: input.scope,
-            limit: input.limit,
-            target: input.target,
-            includeOtherPlayers: input.includeOtherPlayers,
-          },
-          undefined,
-          input.client,
-        ),
+        await bridge.request("listScripts", {
+          query: input.query ?? "",
+          scope: input.scope,
+          limit: input.limit,
+        }),
       ),
   )
 
   server.registerTool(
-    "roblox_search_scripts",
+    "roblox_read_source",
     {
-      title: "Search indexed Roblox code",
+      title: "Read live Roblox script source",
       description:
-        "Search live script metadata plus source cached by explicit roblox_read_script calls, returning ranked snippets, stable identities, constants, and API clues. This tool never decompiles scripts in the background. Inactive scripts under other players are excluded unless explicitly requested.",
-      inputSchema: searchScriptsInput,
+        "Read one script path. pcall decompile when present (not UNC/sUNC); else getscriptbytecode; else constants. Returns { kind: luau|bytecode|constants|empty, data }.",
+      inputSchema: readSourceInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (input) =>
       textResult(
         await bridge.request(
-          "searchScripts",
-          {
-            query: input.query,
-            target: input.target,
-            scope: input.scope,
-            limit: input.limit,
-            contextLines: input.contextLines,
-            maxSnippets: input.maxSnippets,
-            refresh: input.refresh,
-            includeOtherPlayers: input.includeOtherPlayers,
-          },
-          120_000,
-          input.client,
-        ),
-      ),
-  )
-
-  server.registerTool(
-    "roblox_read_script",
-    {
-      title: "Read a live Roblox script",
-      description:
-        "Explicitly invoke Volt's native decompiler for one selected LocalScript or ModuleScript path and return paged output. Volt MCP never invokes the decompiler merely because Roblox joined or remained idle.",
-      inputSchema: readScriptInput,
-      annotations: { readOnlyHint: true, idempotentHint: true },
-    },
-    async (input) =>
-      textResult(
-        await bridge.request(
-          "readScript",
+          "readSource",
           {
             path: input.path,
             startLine: input.startLine,
             lineCount: input.lineCount,
-            target: input.target,
           },
           120_000,
-          input.client,
-        ),
-      ),
-  )
-
-  server.registerTool(
-    "roblox_inspect_closure",
-    {
-      title: "Inspect a Roblox script closure",
-      description:
-        "Return stable script/function identity plus positional constants, upvalues, and nested prototypes for a selected script closure.",
-      inputSchema: inspectClosureInput,
-      annotations: { readOnlyHint: true, idempotentHint: true },
-    },
-    async (input) =>
-      textResult(
-        await bridge.request(
-          "inspectClosure",
-          {
-            path: input.path,
-            target: input.target,
-            prototypePath: input.prototypePath,
-            ...(input.closureId === undefined ? {} : { closureId: input.closureId }),
-          },
-          undefined,
-          input.client,
-        ),
-      ),
-  )
-
-  server.registerTool(
-    "roblox_mutate_closure",
-    {
-      title: "Mutate one Roblox closure value",
-      description:
-        "Compare and replace one primitive constant or root upvalue, retaining its original value for guarded restoration.",
-      inputSchema: mutateClosureInput,
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: true,
-        idempotentHint: false,
-      },
-    },
-    async (input) =>
-      textResult(
-        await bridge.request(
-          "mutateClosure",
-          {
-            path: input.path,
-            closureId: input.closureId,
-            target: input.target,
-            prototypePath: input.prototypePath,
-            kind: input.kind,
-            index: input.index,
-            expected: input.expected,
-            value: input.value,
-          },
-          undefined,
-          input.client,
-        ),
-      ),
-  )
-
-  server.registerTool(
-    "roblox_restore_mutation",
-    {
-      title: "Restore one Roblox closure mutation",
-      description:
-        "Restore the original value retained for a mutation ID, refusing if the live value changed again.",
-      inputSchema: restoreMutationInput,
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-      },
-    },
-    async (input) =>
-      textResult(
-        await bridge.request(
-          "restoreMutation",
-          {
-            mutationId: input.mutationId,
-            target: input.target,
-          },
-          undefined,
-          input.client,
         ),
       ),
   )
@@ -270,7 +119,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     {
       title: "Evaluate Luau in the live Roblox client",
       description:
-        "Execute an explicit Luau chunk through Volt and return its JSON-safe returned values.",
+        "Execute an explicit Luau chunk in the live client and return its JSON-safe returned values.",
       inputSchema: evalInput,
       annotations: {
         readOnlyHint: false,
@@ -281,12 +130,7 @@ export function createMcpServer(bridge: LiveBridge): McpServer {
     },
     async (input) =>
       textResult(
-        await bridge.request(
-          "eval",
-          { code: input.code, chunkName: input.chunkName, target: input.target },
-          120_000,
-          input.client,
-        ),
+        await bridge.request("eval", { code: input.code, chunkName: input.chunkName }, 120_000),
       ),
   )
 
