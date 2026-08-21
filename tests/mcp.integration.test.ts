@@ -89,8 +89,8 @@ function childEnvironment(
       environment[key] = value
     }
   }
-  environment.ROBLOX_CLIENT_MCP_TOKEN = TOKEN
-  environment.ROBLOX_CLIENT_MCP_PORT = String(port)
+  environment["ROBLOX_CLIENT_MCP_TOKEN"] = TOKEN
+  environment["ROBLOX_CLIENT_MCP_PORT"] = String(port)
   return { ...environment, ...extra }
 }
 
