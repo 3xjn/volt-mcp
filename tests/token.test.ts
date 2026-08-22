@@ -32,7 +32,11 @@ function isolatedEnv(overrides: Record<string, string> = {}): Record<string, str
       environment[key] = value
     }
   }
-  return { ...environment, ...overrides }
+  const merged = { ...environment, ...overrides }
+  if ("XDG_CONFIG_HOME" in overrides && !("LOCALAPPDATA" in overrides)) {
+    delete merged.LOCALAPPDATA
+  }
+  return merged
 }
 
 async function getUnusedPort(): Promise<number> {
@@ -47,10 +51,15 @@ async function getUnusedPort(): Promise<number> {
 
 async function startOnce(env: Record<string, string>): Promise<{ stderr: string; stdout: string }> {
   const port = await getUnusedPort()
+  const httpPort = await getUnusedPort()
   const proc = Bun.spawn({
     cmd: [process.execPath, "run", "src/index.ts"],
     cwd: repoRoot,
-    env: { ...env, ROBLOX_CLIENT_MCP_PORT: String(port) },
+    env: {
+      ...env,
+      ROBLOX_CLIENT_MCP_PORT: String(port),
+      ROBLOX_CLIENT_MCP_HTTP_PORT: String(httpPort),
+    },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -211,4 +220,24 @@ test("startup notice includes the Lua snippet and storage location", () => {
   expect(notice).toContain(`token: ${"a".repeat(32)}`)
   expect(notice).toContain("stored at /tmp/roblox-client-mcp/token (created)")
   expect(notice).toContain(loaderSnippet("a".repeat(32)))
+})
+
+test("startup fails when HTTP port equals the live client port", async () => {
+  const port = await getUnusedPort()
+  const proc = Bun.spawn({
+    cmd: [process.execPath, "run", "src/index.ts"],
+    cwd: repoRoot,
+    env: isolatedEnv({
+      ROBLOX_CLIENT_MCP_TOKEN: "a".repeat(32),
+      ROBLOX_CLIENT_MCP_PORT: String(port),
+      ROBLOX_CLIENT_MCP_HTTP_PORT: String(port),
+    }),
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const stderr = await new Response(proc.stderr).text()
+  await proc.exited
+  expect(proc.exitCode).not.toBe(0)
+  expect(stderr).toContain("ROBLOX_CLIENT_MCP_HTTP_PORT must differ from ROBLOX_CLIENT_MCP_PORT")
 })

@@ -46,8 +46,8 @@ bun install
 bun start
 ```
 
-`bun start` is `bun run src/index.ts`. Cursor can spawn it. Example
-`mcp.json` (Windows cwd):
+`bun start` is `bun run src/index.ts`. Cursor can spawn it over stdio.
+Example `mcp.json` (Windows cwd):
 
 ```json
 {
@@ -68,10 +68,16 @@ On start, stderr prints the token, where it was stored, and the Lua to
 paste. Stdout is MCP stdio — the token never goes there. Cursor shows
 stderr in the MCP logs.
 
-`ROBLOX_CLIENT_MCP_PORT` defaults to `32145`. Optional
+`ROBLOX_CLIENT_MCP_PORT` defaults to `32145` (live client WebSocket /
+HTTP poll). `ROBLOX_CLIENT_MCP_HTTP_PORT` defaults to `32146` (Streamable
+HTTP MCP at `/mcp`). Those ports must differ. Optional
 `ROBLOX_CLIENT_MCP_FILEPOLL` is a host directory for the file-poll
 fallback. `ROBLOX_CLIENT_MCP_TOKEN` overrides the stored token if you set
 it.
+
+Other local agents can POST `http://127.0.0.1:$HTTP_PORT/mcp` with
+`Authorization: Bearer <token>` — the same token as the live bridge, same
+four tools. This is not the Lua agent's `/live/poll`.
 
 ### 2. Load the agent
 

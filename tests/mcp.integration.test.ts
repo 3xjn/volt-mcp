@@ -89,23 +89,27 @@ function childEnvironment(
       environment[key] = value
     }
   }
-  environment["ROBLOX_CLIENT_MCP_TOKEN"] = TOKEN
-  environment["ROBLOX_CLIENT_MCP_PORT"] = String(port)
+  environment.ROBLOX_CLIENT_MCP_TOKEN = TOKEN
+  environment.ROBLOX_CLIENT_MCP_PORT = String(port)
   return { ...environment, ...extra }
 }
 
-function openStdioClient(
+async function openStdioClient(
   port: number,
   extra?: Record<string, string>,
-): {
+): Promise<{
   client: Client
   transport: StdioClientTransport
-} {
+}> {
+  const httpPort =
+    extra !== undefined && extra.ROBLOX_CLIENT_MCP_HTTP_PORT !== undefined
+      ? extra.ROBLOX_CLIENT_MCP_HTTP_PORT
+      : String(await getUnusedPort())
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["run", "src/index.ts"],
     cwd: import.meta.dir.replace(/[\\/]tests$/, ""),
-    env: childEnvironment(port, extra),
+    env: childEnvironment(port, { ROBLOX_CLIENT_MCP_HTTP_PORT: httpPort, ...extra }),
     stderr: "pipe",
   })
   return { client: new Client({ name: "roblox-client-mcp-test", version: "0.1.1" }), transport }
@@ -140,7 +144,7 @@ async function waitForJsonFile(
 
 test("serves a live client response through the stdio MCP transport", async () => {
   const port = await getUnusedPort()
-  const { client, transport } = openStdioClient(port)
+  const { client, transport } = await openStdioClient(port)
   let socket: WebSocket | undefined
 
   try {
@@ -170,7 +174,7 @@ test("serves a live client response through the stdio MCP transport", async () =
 
 test("serves a live client response over HTTP poll", async () => {
   const port = await getUnusedPort()
-  const { client, transport } = openStdioClient(port)
+  const { client, transport } = await openStdioClient(port)
 
   try {
     await client.connect(transport)
@@ -212,7 +216,9 @@ test("serves a live client response over HTTP poll", async () => {
 test("serves a live client response over ROBLOX_CLIENT_MCP_FILEPOLL", async () => {
   const port = await getUnusedPort()
   const directory = await mkdtemp(join(tmpdir(), "roblox-client-mcp-filepoll-"))
-  const { client, transport } = openStdioClient(port, { ROBLOX_CLIENT_MCP_FILEPOLL: directory })
+  const { client, transport } = await openStdioClient(port, {
+    ROBLOX_CLIENT_MCP_FILEPOLL: directory,
+  })
   const toHost = join(directory, "to-host.json")
   const toAgent = join(directory, "to-agent.json")
 
